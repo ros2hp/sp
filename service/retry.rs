@@ -337,7 +337,6 @@ async fn persist_dynamo_batch(
                 // in the case of this single-table-design, unprocessed items will
                 // be associated with one table
                 for (_, v) in resp.unprocessed_items.unwrap() {
-
                     sleep(Duration::from_millis(5000)).await;
 
                     let new_bat_w_req: Vec<WriteRequest> = v;

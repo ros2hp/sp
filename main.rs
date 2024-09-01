@@ -8,7 +8,7 @@ mod types;
 use std::collections::HashMap;
 use std::env;
 use std::string::String;
-//use std::sync::Arc;
+use std::sync::Arc;
 
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::builders::PutRequestBuilder;
@@ -34,7 +34,7 @@ const OV_BLOCK_UID: u8 = 4; // this entry represents an overflow block. Current 
 const OV_BATCH_MAX_SIZE: u8 = 5; // overflow batch reached max entries - stop using. Will force creating of new overflow block or a new batch.
 const _EDGE_FILTERED: u8 = 6; // set to true when edge fails GQL uid-pred  filter
 const DYNAMO_BATCH_SIZE: usize = 25;
-const MAX_TASKS: usize = 8;
+const MAX_TASKS: usize = 4;
 
 const LS: u8 = 1;
 const LN: u8 = 2;
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
     let graph =
         env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
-    let table_name = "RustGraph.dev.3";
+    let table_name = "RustGraph.dev.4";
     // ===========================
     // 2. Create a Dynamodb Client
     // ===========================
@@ -164,9 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             t.get_short(),
             t.is_reference()
         );
-        for attr in t {
-            println!("attr.name [{}] dt [{}]  c [{}]", attr.name, attr.dt, attr.c);
-        }
+        // for &attr in t.iter() {
+        //     println!("attr.name [{}] dt [{}]  c [{}]", attr.name, attr.dt, attr.c);
+        // }
     }
     
     // create broadcast channel to shutdown services
@@ -260,11 +260,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ==============================================================
     for puid in parent_node {
     
-        if puid.to_string() != "43e5aca0-530a-40cb-8cf9-4aee94a1d05f" {
-            continue
-        }
+        // if puid.to_string() != "8ce42327-0183-4632-9ba8-065808909144" { // a Peter Sellers Performance node
+        //     continue
+        // }
 
-        println!("+++++ New parent node [{}]",puid.to_string());
+        println!("puid  [{}]",puid.to_string());
         // ------------------------------------------
         let p_sk_edges = match parent_edges.remove(&puid) {
             None => {
@@ -299,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 // =====================================================================
                 // p_node_ty : find type of puid . use sk "m|T#"  <graph>|<T,partition># //TODO : type short name should be in mysql table - saves fetching here.
                 // =====================================================================
-                let (p_node_ty, ovbs)  = fetch_ty_nd(&dyn_client, &puid, &p_sk_edge , &graph_sn, &node_types, table_name).await;
+                let (p_node_ty, ovbs)  = fetch_edge_ty_nd(&dyn_client, &puid, &p_sk_edge , &graph_sn, &node_types, table_name).await;
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
                 // // ================================================================================            
                 // // ty_attr :  parent attribute identifer prefixed with graph short name e.g. m|name
@@ -356,7 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                         // 9.2.3.1.2 populate node cach (nc) from query result
                         // ============================================================
                         let mut nc: Vec<types::DataItem> = vec![];
-                        let mut nc_attr_map: types::NodeMap = types::NodeMap(HashMap::new()); // HashMap<types::AttrShortNm, types::DataItem> = HashMap::new();
+                        let mut nc_attr_map: types::NodeCache = types::NodeCache(HashMap::new()); // HashMap<types::AttrShortNm, types::DataItem> = HashMap::new();
 
                         if let Some(dyn_items) = result.unwrap().items {
                             nc = dyn_items.into_iter().map(|v| v.into()).collect();
@@ -689,7 +689,6 @@ async fn persist(
                     }
                 }
 
-                
                 // =============================================
                 // keep adding batches across ovbs (round robin)
                 // =============================================
@@ -783,7 +782,7 @@ async fn persist(
 
 
 // returns node type as String, moving ownership from AttributeValue - preventing further allocation.
-async fn fetch_ty_nd<'a, T: Into<String>>(
+async fn fetch_edge_ty_nd<'a, T: Into<String>>(
     dyn_client: &DynamoClient,
     uid: &Uuid,
     sk: &str,
@@ -810,27 +809,24 @@ async fn fetch_ty_nd<'a, T: Into<String>>(
             err
         )
     }
-    let mut node: types::NodeType = match result.unwrap().item {
+    let mut di: types::DataItem = match result.unwrap().item {
         None => panic!("No type item found in fetch_node_type() for [{}] [{}]", uid, sk),
         Some(v) => v.into(),
     };
-    // Ty prefixed with "graph_sn|"", remove
-    let ty_= (&node.short_nm()[node.short_nm().find('|').unwrap()+1..]).to_owned();
-    
 
-    let ovb_start_idx = node.xf.iter().filter(|&&v| v<4).fold(0,|a,_| a+1);  // xf idx entry of first Ovb Uuid
+    let ovb_start_idx = di.xf.as_ref().expect("xf is None").iter().filter(|&&v| v<4).fold(0,|a,_| a+1);  // xf idx entry of first Ovb Uuid
     if ovb_start_idx > EMBEDDED_CHILD_NODES {        
         panic!("OvB inconsistency: XF embedded entry {} does not match EMBEDDED_CHILD_NODES {}",ovb_start_idx,EMBEDDED_CHILD_NODES);
     }
 
-    let ovb_cnt = node.xf.iter().filter(|&&v| v==4).fold(0,|a,_| a+1);
+    let ovb_cnt = di.xf.expect("xf is None").iter().filter(|&&v| v==4).fold(0,|a,_| a+1);
     if ovb_cnt > MAX_OV_BLOCKS {
         panic!("OvB inconsistency: XF attribute contains {} entry, MAX_OV_BLOCKS is {}",ovb_cnt,MAX_OV_BLOCKS);
     }
 
-    let ovb_pk: Vec<Uuid> = node.nd.drain(ovb_start_idx..).collect();
+    let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();
 
-    (node_types.get(&ty_), ovb_pk)
+    (node_types.get(&di.ty.expect("ty is None")), ovb_pk)
 
 }
 

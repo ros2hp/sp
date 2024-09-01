@@ -5,8 +5,8 @@ pub mod block;
 // export block types
 //pub use block::{ DataItem, NodeBlock};
 pub use block::{
-    DataItem, NodeMap, B, BID, BL, CNT, DT, GRAPH, ISNODE, IX, LB, LBL, LN, LS, N, ND, OP, P,
-    PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF, OVB,
+    DataItem, NodeCache, B, BID, BL, CNT, DT, GRAPH, ISNODE, IX, LB, LBL, LN, LS, N, ND, OP, P,
+    PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF, OVB, 
 };
 
 use std::collections::{HashMap, HashSet};
@@ -64,6 +64,24 @@ use uuid::{self, Builder, Uuid}; //, as_vec_string};
 
 // aws_sdk_dynamodb type conversion from AttributeValue to Rust type
 
+
+pub fn as_string_trim_graph(val: AttributeValue) -> Option<String> {
+    match val {
+       AttributeValue::S(s) => {let s_ = match s.split('|').last() {
+                                    Some(t) => t.to_owned() ,
+                                    None => s,
+                                  };
+                                  Some(s_)
+                                },
+       AttributeValue::Null(b) => { 
+            if b == false {
+                panic!("Got Null with bool of false")
+            }
+            None
+        },
+       _ => panic!("as_string(): Expected AttributeValue::S or ::NULL"),
+    }
+}
 
 pub fn as_string(val: AttributeValue) -> Option<String> {
     match val {
@@ -646,8 +664,6 @@ pub struct NodeType {
     short: String,
     long: String,
     reference: bool,
-    pub nd: Vec<Uuid>,
-    pub xf: Vec<i8>,
     attrs: Option<block::AttrBlock>,
 }
 
@@ -687,8 +703,6 @@ impl NodeType {
             short: String::new(), // long type name
             long: String::new(),  // sort type name
             reference: false,     // is type a container for reference data (i.e. static data)
-            nd: vec![],
-            xf : vec![],
             attrs: None,          // type attributes
         }
     }
@@ -816,22 +830,22 @@ impl From<HashMap<String, AttributeValue>> for NodeType {
                             }
                         },
                 "OvBs" => {},
-                block::ND => { match as_luuid(v) {
-                                  Some(u) => ty.nd = u,
-                                  None => panic!("From AV for Node, expected Vec<Uuid> got Null"),
-                                }
-                            },
-                block::XF =>  { match as_li8(v) {
-                                Some(u) => ty.xf = u,
-                                None => panic!("From AV for Node, expected Vec<i8> got Null"),
-                                }
-                            },
-                block::TY => {
-                        match as_string(v) {
-                            Some(s) => {ty.short=s},
-                            None => panic!("From AV for NodeType Ty, expected string got Null")
-                        }
-                        },
+                // block::ND => { match as_luuid(v) {
+                //                   Some(u) => ty.nd = u,
+                //                   None => panic!("From AV for Node, expected Vec<Uuid> got Null"),
+                //                 }
+                //             },
+                // block::XF =>  { match as_li8(v) {
+                //                 Some(u) => ty.xf = u,
+                //                 None => panic!("From AV for Node, expected Vec<i8> got Null"),
+                //                 }
+                //             },
+                // block::TY => {
+                //         match as_string(v) {
+                //             Some(s) => {ty.short=s},
+                //             None => panic!("From AV for NodeType Ty, expected string got Null")
+                //         }
+                //      },
                 _ => panic!("NodeType from impl: unexpected attribute got [{}]", k),
             }
         }

@@ -1,19 +1,18 @@
 #![warn(unused_variables)]
 #![warn(dead_code)]
 use super::{
-    as_blob2, as_bool,  as_float2, as_i16, as_i16_2, as_i32_2, as_i8_2, as_int2, as_lb2,
-    as_lblob2, as_lbool2, as_ldt2, as_lfloat2, as_li16_2, as_li32_2, as_li8_2, as_lint2, as_ln2,
-    as_ls2, as_luuid, as_string, as_uuid, as_vi32, as_vi8, as_n,
+    as_blob2, as_bool, as_float2, as_i16, as_i16_2, as_i32_2, as_i8_2, as_int2, as_lb2, as_lblob2,
+    as_lbool2, as_ldt2, as_lfloat2, as_li16_2, as_li32_2, as_li8_2, as_lint2, as_ln2, as_ls2,
+    as_luuid, as_n, as_string, as_uuid, as_vi32, as_vi8,as_string_trim_graph,
 };
 use aws_sdk_dynamodb::types::AttributeValue;
-use std::{any::Any, collections::HashMap};
 use std::str::FromStr;
 #[warn(non_camel_case_types)]
 //#[allow(non_camel_case_types)]
 //#[warn(dead_code)]
 use std::sync::Arc;
+use std::{any::Any, collections::HashMap};
 //mod block {. // do not include in mod definition file
-use std::time;
 use uuid::{self, Uuid}; //, as_vec_string};
 
 //               Dynamo Attr
@@ -45,10 +44,10 @@ pub const SN: &str = "SN";
 pub const SS: &str = "SS";
 pub const SBL: &str = "SBL";
 // Edge
-pub const CNT: &str = "Cnt";          // edge count
+pub const CNT: &str = "Cnt"; // edge count
 pub const ND: &str = "Nd";
-pub const BID: &str = "Bid";        // Batch id in OvB otherwise 0
-pub const XF: &str = "Xf";          // how to interrupt value in Nd: child node, OvB node, deleted node, etc
+pub const BID: &str = "Bid"; // Batch id in OvB otherwise 0
+pub const XF: &str = "Xf"; // how to interrupt value in Nd: child node, OvB node, deleted node, etc
 pub const OVB: &str = "OvB";
 // Propagated Scalars, scalar lists (determined by SK value)
 pub const LS: &str = "LS";
@@ -60,6 +59,24 @@ pub const LDT: &str = "LDT";
 pub const OP: &str = "OP"; // overflow parent UUID
                            // reverse
 pub const TUID: &str = "TUID";
+pub const COMMENT: &str = "Comment";
+pub const TYIX: &str = "TyIx";
+
+// Reverse edge
+pub const TARGET : &str = "Tuid";
+//pub const BID : &str = "Bid";
+pub const ID : &str = "id";
+
+
+// XF values
+pub const CHILD: i8 = 1;
+pub const CHILD_INUSE: i8 = 2;
+pub const CHILD_DETACHED: i8 = 3;
+pub const OVB_: i8 = 4;
+pub const OVB_INUSE: i8 = 5;
+pub const OVB_THRESHOLD_HIT: i8 = 6;
+
+
 
 #[derive(Debug)]
 pub struct SK_(pub String);
@@ -109,16 +126,15 @@ pub struct DataItem {
     pub is_node: Option<bool>,
     pub ix: Option<String>, // used during double-propagation load "X": not processed, "Y": processed
     // scalar types
-
     pub n: Option<String>, // number type. No conversion from db storage format. Used for bulk loading operations only.
-    pub f: Option<f64>,           // Nullable type has None for Null values
-    pub i: Option<i64>,           // Nullable type has None for Null values  
-    
-    pub s: Option<String>, // string
-    pub bl: Option<bool>,  // boolean
+    pub f: Option<f64>,    // Nullable type has None for Null values
+    pub i: Option<i64>,    // Nullable type has None for Null values
+
+    pub s: Option<String>,  // string
+    pub bl: Option<bool>,   // boolean
     pub b: Option<Vec<u8>>, // byte array
     pub dt: Option<String>, // DateTime
-    pub p: Option<String>, // attribute name as used in P_S, P_N, P_B global indexes
+    pub p: Option<String>,  // attribute name as used in P_S, P_N, P_B global indexes
     pub ty: Option<String>, // type of node long name [and attribute e.g. Pf#N>, P#D (persisted in db>, alternative to cache)
     //    pub tya : Option<String>,         // item (attribute) type short name>, I>, F>, S, SS, B, SB etc telss From(below) hos to interpret dataitem
     pub e: Option<String>, // used for attributes populating ElasticSearch
@@ -141,18 +157,20 @@ pub struct DataItem {
     pub nd: Option<Vec<Uuid>>, //uuid.UID // list of node UIDs>, overflow block UIDs>, oveflow index UIDs
     pub xf: Option<Vec<i8>>, // flag: used in uid-predicate 1 : c-UID>, 2 : c-UID is soft deleted>, 3 : ovefflow UID>, 4 : overflow block full
     pub bid: Option<Vec<i32>>, // current maximum overflow batch id.
+    pub ovb: Option<bool>,
     // overflow
     pub op: Option<Uuid>, // assoc Parent UUID
     // double propagation
     // reverse edge
     pub tuid: Option<Uuid>,
+    pub tyix: Option<String>,
 }
 
 impl DataItem {
     // ********************************
     // Null value represented by None
     // ********************************
-    fn new() -> Self {
+    pub fn new() -> Self {
         DataItem {
             pk: vec![], // try using zero values for type instead of using Option::None. see if this works.
             sk: SK_(String::new()),
@@ -161,8 +179,8 @@ impl DataItem {
             is_node: None,
             ix: None,
             // scalars
-            i: None,    // internal, db uses attribute N
-            f: None,    // internal, db uses attribute N
+            i: None, // internal, db uses attribute N
+            f: None, // internal, db uses attribute N
             n: None, // copy of N - useful when no conversion is necessary
             s: None,
             bl: None,
@@ -192,10 +210,12 @@ impl DataItem {
             nd: None,
             xf: None,
             bid: None,
+            ovb: None,
             // overflow
             op: None,
             // reverse
             tuid: None,
+            tyix: None, 
         }
     }
 
@@ -376,13 +396,13 @@ impl From<HashMap<String, AttributeValue>> for DataItem {
                     di.ix = as_string(v);
                 } // used during double-propagation load "X": not processed, "Y": processed
                 // scalars
-                N => di.n =  as_n(v), 
+                N => di.n = as_n(v),
                 P => di.p = as_string(v),
                 S => di.s = as_string(v),
                 BL => di.bl = as_bool(v),
                 B => di.b = as_blob2(v),
                 DT => di.dt = as_string(v), // DateTime
-                TY => di.ty = as_string(v), // type of node (stored with each scalar item)
+                TY => di.ty = as_string_trim_graph(v), // type of node (stored with each scalar item)
                 E => di.e = as_string(v),
                 // lists
                 LS => di.ls = as_ls2(v),
@@ -420,6 +440,10 @@ impl From<HashMap<String, AttributeValue>> for DataItem {
                 OP => {
                     di.op = as_uuid(v);
                 } // parent UID in overflow blocks
+                OVB => {},
+                TYIX => {
+                    di.tyix = as_string_trim_graph(v);
+                }
                 _ => panic!("unexpected attribute name in DataItem From impl [{}]", k),
             }
         }
@@ -427,7 +451,7 @@ impl From<HashMap<String, AttributeValue>> for DataItem {
     }
 }
 
-pub struct NodeMap(pub HashMap<String, DataItem>);
+pub struct NodeCache(pub HashMap<String, DataItem>);
 
 //=============== AttrItem  ========================================================
 
@@ -487,6 +511,7 @@ impl From<HashMap<String, AttributeValue>> for AttrItem {
                 //"Sz" => item.sz = as_string(v),
                 "Ix" => item.ix = as_string(v),
                 "IncP" => println!("IncP not used..."),
+                COMMENT => {}
                 &_ => panic!("unexpected attribute name in AttrItem From impl [{}]", k),
             }
         }
@@ -504,7 +529,7 @@ pub struct AttrD {
     pub name: String,   // Attribute Identfier
     pub dt: String, // Derived value. Attribute Data Type - Nd (for uid-pred attribute only), (then scalars) DT,I,F,S,LI,SS etc
     pub c: String,  // Attribute short identifier
-    pub ty: String, // For uid-pred only, the type it respresents e.g "Person"
+    pub ty: String, // For edge only, the type it represents e.g "Person"
     pub p: String,  // data partition (aka shard) containing attribute
     pub nullable: bool, // true: nullable (attribute may not exist) false: not nullable
     pub pg: bool,   // true: propagate scalar data to parent
@@ -519,7 +544,7 @@ impl AttrD {
             name: String::new(),
             dt: String::new(),
             c: String::new(),
-            ty: String::new(),  // edge only attr: child type long name
+            ty: String::new(), // edge only attr: child type long name
             p: String::new(),
             nullable: false, // true: nullable (attribute may not exist) false: not nullable
             pg: true,        // true: propagate scalar data to parent
@@ -528,18 +553,6 @@ impl AttrD {
             card: String::new(),
         }
     }
-
-    // pub fn gen_pg_sortk(&self) -> Vec<SortK> {
-    //     let sk = "A#".to_string();
-    //     sk.push_str(self.p);
-    //     sk.push('#');
-    //     sk.push_str(self.c);
-    //     sk.push_str("#G#");
-    //     let attr_11 : Vec<AttrD> = self.filter(|&block::AttrD{card: x, ..}| x == "1:1" ).collect();
-    //     for k in get_ty_11 { 
-    //         sk.push_str(get_scalar_sk(self.ty))
-    //     }
-    // }
 }
 
 #[derive(Debug, Clone)]
