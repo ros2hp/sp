@@ -7,6 +7,7 @@ use super::{
 };
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::str::FromStr;
+use std::sync::LazyLock;
 #[warn(non_camel_case_types)]
 //#[allow(non_camel_case_types)]
 //#[warn(dead_code)]
@@ -49,6 +50,7 @@ pub const ND: &str = "Nd";
 pub const BID: &str = "Bid"; // Batch id in OvB otherwise 0
 pub const XF: &str = "Xf"; // how to interrupt value in Nd: child node, OvB node, deleted node, etc
 pub const OVB: &str = "OvB";
+
 // Propagated Scalars, scalar lists (determined by SK value)
 pub const LS: &str = "LS";
 pub const LN: &str = "LN";
@@ -63,10 +65,11 @@ pub const COMMENT: &str = "Comment";
 pub const TYIX: &str = "TyIx";
 
 // Reverse edge
-pub const TARGET : &str = "Tuid";
-//pub const BID : &str = "Bid";
-pub const ID : &str = "id";
-
+//pub const OVB : &str = "OVB";           // List of UUIDs for OvBs
+pub const OVB_BID: &str = "OBID";       // List of current Batch ID in each OvB
+pub const OVB_CNT: &str = "OBCNT";
+pub const OVB_ID: &str = "OID";         // List of current index for each Batch 
+pub const OVB_CUR: &str = "OCUR";  
 
 // XF values
 pub const CHILD: i8 = 1;
@@ -75,6 +78,9 @@ pub const CHILD_DETACHED: i8 = 3;
 pub const OVB_: i8 = 4;
 pub const OVB_INUSE: i8 = 5;
 pub const OVB_THRESHOLD_HIT: i8 = 6;
+
+//pub static LOAD_PROJ : LazyLock<String> = LazyLock::new(||"OvB".to_string() +  "," + OVB_BID + "," + OVB_ID + "," + OVB_CUR);
+
 
 
 

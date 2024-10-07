@@ -6,7 +6,7 @@ pub mod block;
 //pub use block::{ DataItem, NodeBlock};
 pub use block::{
     DataItem, NodeCache, B, BID, BL, CNT, DT, GRAPH, ISNODE, IX, LB, LBL, LN, LS, N, ND, OP, P,
-    PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF, OVB, 
+    PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF, OVB, OVB_BID, OVB_ID, OVB_CUR, OVB_CNT,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -63,6 +63,40 @@ use uuid::{self, Builder, Uuid}; //, as_vec_string};
 // }
 
 // aws_sdk_dynamodb type conversion from AttributeValue to Rust type
+
+pub fn uuid_to_av_lb(invec : &Vec<Uuid>) -> AttributeValue {
+    let mut av  : Vec<AttributeValue> = vec![];
+    for v in invec {
+        av.push(AttributeValue::B(Blob::new(v.clone().as_bytes())))
+    }
+    AttributeValue::L(av)
+}
+
+
+pub fn u8_to_av_ln(invec : &Vec<u8>) -> AttributeValue {
+    let mut av  : Vec<AttributeValue> = vec![];
+    for v in invec {
+        av.push(AttributeValue::N(v.to_string()))
+    }
+    AttributeValue::L(av)
+}
+
+pub fn u32_to_av_ln(invec : &Vec<u32>) -> AttributeValue {
+    let mut av  : Vec<AttributeValue> = vec![];
+    for v in invec {
+        av.push(AttributeValue::N(v.to_string()))
+    }
+    AttributeValue::L(av)
+}
+
+pub fn i32_to_av_ln(invec : &Vec<i32>) -> AttributeValue {
+    let mut av  : Vec<AttributeValue> = vec![];
+    for v in invec {
+        av.push(AttributeValue::N(v.to_string()))
+    }
+    AttributeValue::L(av)
+}
+
 
 
 pub fn as_string_trim_graph(val: AttributeValue) -> Option<String> {
@@ -214,17 +248,28 @@ pub fn as_xf(val: AttributeValue) -> Option<Vec<i8>> {
 pub fn as_i8_2(val: AttributeValue) -> Option<i8> {
     if let AttributeValue::N(v) = val {
         let Ok(i) = i8::from_str(&v) else {
-            panic!("as_i16_2() : failed to convert String [{:?}] to i64", v)
+            panic!("as_i8_2() : failed to convert String [{:?}] to i8", v)
         };
         return Some(i);
     }
     None
 }
 
+pub fn as_u8_2(val: AttributeValue) -> Option<u8> {
+    if let AttributeValue::N(v) = val {
+        let Ok(i) = u8::from_str(&v) else {
+            panic!("as_u8_2() : failed to convert String [{:?}] to u8", v)
+        };
+        return Some(i);
+    }
+    None
+}
+
+
 pub fn as_i16_2(val: AttributeValue) -> Option<i16> {
     if let AttributeValue::N(v) = val {
         let Ok(i) = i16::from_str(v.as_str()) else {
-            panic!("as_i16_2() : failed to convert String [{:?}] to i64", v)
+            panic!("as_i16_2() : failed to convert String [{:?}] to i16", v)
         };
         return Some(i);
     }
@@ -234,7 +279,37 @@ pub fn as_i16_2(val: AttributeValue) -> Option<i16> {
 pub fn as_i32_2(val: AttributeValue) -> Option<i32> {
     if let AttributeValue::N(v) = val {
         let Ok(i) = i32::from_str(v.as_str()) else {
-            panic!("as_i32_2() : failed to convert String [{:?}] to i64", v)
+            panic!("as_i32_2() : failed to convert String [{:?}] to i32", v)
+        };
+        return Some(i);
+    }
+    None
+}
+
+pub fn as_i64_2(val: AttributeValue) -> Option<i64> {
+    if let AttributeValue::N(v) = val {
+        let Ok(i) = i64::from_str(v.as_str()) else {
+            panic!("as_i64_2() : failed to convert String [{:?}] to i64", v)
+        };
+        return Some(i);
+    }
+    None
+}
+
+pub fn as_u32_2(val: AttributeValue) -> Option<u32> {
+    if let AttributeValue::N(v) = val {
+        let Ok(i) = u32::from_str(v.as_str()) else {
+            panic!("as_u32_2() : failed to convert String [{:?}] to u32", v)
+        };
+        return Some(i);
+    }
+    None
+}
+
+pub fn as_u64_2(val: AttributeValue) -> Option<u64> {
+    if let AttributeValue::N(v) = val {
+        let Ok(i) = u64::from_str(v.as_str()) else {
+            panic!("as_u64_2() : failed to convert String [{:?}] to u64", v)
         };
         return Some(i);
     }
@@ -268,6 +343,76 @@ pub fn as_li8(val: AttributeValue) -> Option<Vec<i8>> {
     }
     Some(vs)
 }
+
+pub fn as_lu8(val: AttributeValue) -> Option<Vec<u8>> {
+    let mut vs: Vec<u8> = vec![];
+    let AttributeValue::L(inner) = val else {
+        panic!("as_lu8(): Expected AttributeValue::L")
+    };
+    for s in inner {
+        let AttributeValue::N(v) = s else {
+            panic!("as_lu8(): Expected AttributeValue::N")
+        };
+        let Ok(f) = u8::from_str(v.as_str()) else {
+            panic!("as_lu8() : failed to convert String [{}] to i8", v)
+        };
+        vs.push(f);
+    }
+    Some(vs)
+}
+
+pub fn as_li32(val: AttributeValue) -> Option<Vec<i32>> {
+    let mut vs: Vec<i32> = vec![];
+    let AttributeValue::L(inner) = val else {
+        panic!("as_li32(): Expected AttributeValue::L")
+    };
+    for s in inner {
+        let AttributeValue::N(v) = s else {
+            panic!("as_li32: Expected AttributeValue::N")
+        };
+        let Ok(i) = i32::from_str(v.as_str()) else {
+            panic!("as_li32() : failed to convert String [{}] to i32", v)
+        };
+        vs.push(i);
+    }
+    Some(vs)
+}
+
+pub fn as_lu32(val: AttributeValue) -> Option<Vec<u32>> {
+    let mut vs: Vec<u32> = vec![];
+    let AttributeValue::L(inner) = val else {
+        panic!("as_lu32(): Expected AttributeValue::L")
+    };
+    for s in inner {
+        let AttributeValue::N(v) = s else {
+            panic!("as_lu32: Expected AttributeValue::N")
+        };
+        let Ok(i) = u32::from_str(v.as_str()) else {
+            panic!("as_li32() : failed to convert String [{}] to u32", v)
+        };
+        vs.push(i);
+    }
+    Some(vs)
+}
+
+
+pub fn as_lusize(val: AttributeValue) -> Option<Vec<usize>> {
+    let mut vs: Vec<usize> = vec![];
+    let AttributeValue::L(inner) = val else {
+        panic!("as_lusize(): Expected AttributeValue::L")
+    };
+    for s in inner {
+        let AttributeValue::N(v) = s else {
+            panic!("as_lusize: Expected AttributeValue::N")
+        };
+        let Ok(i) = usize::from_str(v.as_str()) else {
+            panic!("as_lusize() : failed to convert String [{}] to i64", v)
+        };
+        vs.push(i);
+    }
+    Some(vs)
+}
+
 
 pub fn as_li64(val: AttributeValue) -> Option<Vec<i64>> {
     let mut vs: Vec<i64> = vec![];
@@ -330,7 +475,7 @@ pub fn as_luuid(val: AttributeValue) -> Option<Vec<Uuid>> {
             if let AttributeValue::B(blob) = v {
                 match <[u8; 16] as TryFrom<Vec<u8>>>::try_from(blob.into_inner()) {
                     Err(e) => {
-                        panic!("TryFrom error in as_luuid")
+                        panic!("TryFrom error in as_luuid: {:?}",e)
                     }
                     Ok(ary) => vs.push(Builder::from_bytes(ary).into_uuid()),
                 }
@@ -362,6 +507,17 @@ pub fn as_i64(val: Option<&AttributeValue>, default: i64) -> i64 {
     if let Some(v) = val {
         if let Ok(n) = v.as_n() {
             if let Ok(n) = n.parse::<i64>() {
+                return n;
+            }
+        }
+    }
+    default
+}
+
+pub fn as_i32(val: Option<&AttributeValue>, default: i32) -> i32 {
+    if let Some(v) = val {
+        if let Ok(n) = v.as_n() {
+            if let Ok(n) = n.parse::<i32>() {
                 return n;
             }
         }
@@ -412,6 +568,7 @@ pub fn as_ln2(val: AttributeValue) -> Option<Vec<Option<String>>> {
     Some(vs)
 }
 
+// for NULLABLE attributes - seel as_li8 for NON-NULLABLE
 pub fn as_li8_2(val: AttributeValue) -> Option<Vec<Option<i8>>> {
     let mut vs: Vec<Option<i8>> = vec![];
     if let AttributeValue::L(inner) = val {
@@ -646,9 +803,10 @@ impl Prefix {
 
 impl From<HashMap<String, AttributeValue>> for Prefix {
     fn from(mut value: HashMap<String, AttributeValue>) -> Self {
+  
         let mut prefix: Prefix = Prefix::new();
         let Some(p) = value.remove("SortK") else {
-            panic!("no SortK value for Prefix")
+            panic!("Cannot remove 'Sortke' from HashMap")
         };
         let Some(s) = as_string(p) else {
             panic!("expected Some for as_string() got None")
@@ -812,7 +970,7 @@ impl NodeType {
     }
 }
 
-// From used by both DataType and Graph queries
+// From used by both DataType and Graph queries - populated from GraphSS - GoGraph data types 
 impl From<HashMap<String, AttributeValue>> for NodeType {
     fn from(mut value: HashMap<String, AttributeValue>) -> Self {
         // ownerships transferred from AttributeValue into NodeType

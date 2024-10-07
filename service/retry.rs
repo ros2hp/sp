@@ -315,7 +315,7 @@ pub fn start_service(
 
 async fn persist_dynamo_batch(
     dynamo_client: &DynamoClient,
-    mut bat_w_req: Vec<WriteRequest>,
+    bat_w_req: Vec<WriteRequest>,
     retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     table_name: impl Into<String>,
 ) -> Vec<WriteRequest> {
