@@ -1,8 +1,11 @@
 //#[deny(unused_imports)]
 //#[warn(unused_imports)]
+#[allow(unused_imports)]
+
 mod lru;
 mod node;
-#[allow(unused_imports)]
+mod rkey;
+
 mod service;
 mod types;
 
@@ -14,6 +17,8 @@ use std::sync::LazyLock;
 use std::sync::{Arc, Weak};
 
 use node::RNode;
+
+use rkey::RKey;
 
 use lru::LRU;
 
@@ -143,11 +148,11 @@ enum Operation {
 }
 
 // Message sent on Evict Queued Channel
-struct Query_Msg(RKey, tokio::sync::mpsc::Sender<bool>);
+struct QueryMsg(RKey, tokio::sync::mpsc::Sender<bool>);
 
-impl Query_Msg {
+impl QueryMsg {
     fn new(rkey: RKey, resp_ch: tokio::sync::mpsc::Sender<bool>) -> Self {
-        Query_Msg(rkey, resp_ch)
+        QueryMsg(rkey, resp_ch)
     }
 }
 
@@ -213,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(MAX_SP_TASKS * 5);
     //  * query evict service e.g. is node in evict queue?
     let (evict_query_ch_p, evict_query_rx) =
-        tokio::sync::mpsc::channel::<Query_Msg>(MAX_SP_TASKS * 2);
+        tokio::sync::mpsc::channel::<QueryMsg>(MAX_SP_TASKS * 2);
     // * shutdown
     let evict_shutdown_ch = shutdown_broadcast_sender.subscribe();
     // pending evict
@@ -633,7 +638,7 @@ async fn persist(
     ovb_pk: HashMap<String, Vec<Uuid>>,
     items: HashMap<SortK, Operation>,
     //
-    evict_query_ch: tokio::sync::mpsc::Sender<Query_Msg>,
+    evict_query_ch: tokio::sync::mpsc::Sender<QueryMsg>,
 ) {
     // create channels to communicate (to and from) lru eviction service
     // evict_resp_ch: sender - passed to eviction service so it can send its response back to this routine
@@ -645,10 +650,6 @@ async fn persist(
         match v {
             Operation::Attach(_) => {}
             Operation::Propagate(mut e) => {
-                //println!("Persist Operation::Propagate [{}]",sk);
-
-                //let ovbs : Vec<AttributeValue> = ovb_pk.get(&e.psk).unwrap().iter().map(|uid| AttributeValue::B(Blob::new(uid.clone().as_bytes()))).collect();
-
                 let mut finished = false;
 
                 let put = aws_sdk_dynamodb::types::PutRequest::builder();
@@ -732,34 +733,23 @@ async fn persist(
                 //println!("save_item...{}",bat_w_req.len());
                 bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
-                // if !child_ty.is_reference() {
+                if !child_ty.is_reference() {
 
-                //     for (id, child) in children.into_iter().enumerate() {
-
-                //         let arc_rvs_item : Arc<tokio::sync::Mutex<RNode>>;
-                //         let rkey = RKey::new(child.clone(), reverse_sk.clone());
-                //         {
-                //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex
-                //             let mut guard = match rcache.lock() {
-                //                 Err(e) => panic!("failed to get a lock on ReverseCache - {}",e),
-                //                 Ok(g) => g,
-                //             };
-                //             // with mutex guard, can ccess global reverse cache (using guard's support of Deref)
-                //             arc_rvs_item = guard.get(&rkey);
-                //         } // unlock outer Mutex
-
-                //                 // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.
-                //                 let mut guard = arc_rvs_item.lock().await;
-
-                //                 let edge = guard.add_reverse_edge(dyn_client, table_name, target_uid.clone(), 0, 0).await;
-
-                //                 //rcache.lock().unwrap().0.entry(rkey).and_modify(|e| *e=Arc::new(tokio::sync::Mutex::new(edge)));
-                //                 // if let Some(v) = rcache.lock().unwrap().0.get_mut(&rkey) {
-                //                 //     *v = Arc::new(tokio::sync::Mutex::new(edge))
-                //                 // }
-                //                 guard.update(edge);
-                //     } //unlock inner tokio::Mutex
-                // }
+                    for (id, child) in children.into_iter().enumerate() {
+                        let rkey = RKey::new(child.clone(), reverse_sk.clone());
+                        rkey.add_reverse_edge(
+                            dyn_client
+                            , table_name
+                            , lru.clone()
+                            , evict_query_ch.clone()
+                            , evict_client_send_ch.clone()
+                            , &mut evict_srv_resp_ch
+                            , &target_uid
+                            , 0
+                            , 0
+                        );
+                    }
+                }
 
                 if finished {
                     continue;
@@ -860,29 +850,24 @@ async fn persist(
                         bat_w_req =
                             save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
-                        // if !child_ty.is_reference() {
+                        if !child_ty.is_reference() {
+                            for (id, child) in children.into_iter().enumerate() {
 
-                        //     for (id, child) in children.into_iter().enumerate() {
-
-                        //         let arc_rvs_item : Arc<tokio::sync::Mutex<RNode>>;
-                        //         let rkey = RKey::new(child.clone(), reverse_sk.clone());
-                        //         {
-                        //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex
-                        //             let mut guard = match rcache.lock() {
-                        //                 Err(e) => panic!("failed to get a lock on ReverseCache - {}",e),
-                        //                 Ok(g) => g,
-                        //             };
-                        //             // with mutex guard, can ccess global reverse cache (using guard's support of Deref)
-                        //             arc_rvs_item = guard.get(&rkey);
-                        //         } // unlock outer Mutex
-
-                        //         // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.
-                        //         let mut guard = arc_rvs_item.lock().await;
-
-                        //         let edge = guard.add_reverse_edge(dyn_client, table_name, ovb.clone(), bid, id).await;
-                        //         //guard.update(edge);
-                        //     } //unlock inner tokio::Mutex
-                        // }
+                                let rkey = RKey::new(child.clone(), reverse_sk.clone());
+                                
+                                rkey.add_reverse_edge(
+                                    dyn_client
+                                    , table_name
+                                    , lru.clone()
+                                    , evict_query_ch.clone()
+                                    , evict_client_send_ch.clone()
+                                    , &mut evict_srv_resp_ch
+                                    , &ovb
+                                    , 0
+                                    , 0
+                                );
+                            }
+                        }
                     }
                     if finished {
                         break;
@@ -974,84 +959,21 @@ async fn persist(
                             save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
                         if !child_ty.is_reference() {
-                            let lru_c = lru.clone();
-
                             for (id, child) in children.into_iter().enumerate() {
                                 // below design makes use of Mutexes to serialise access to cache
                                 // alternatively, manage addition of reverse edges via a "service" or separate load process.
                                 let rkey = RKey::new(child.clone(), reverse_sk.clone());
+                                rkey.add_reverse_edge(
+                                    dyn_client
+                                    , table_name
+                                    , lru.clone()
+                                    , evict_query_ch.clone()
+                                    , evict_client_send_ch.clone()
+                                    , &mut evict_srv_resp_ch
+                                    , &ovb
+                                    , bid
+                                    , id);
 
-                                // ===============================
-                                let mut lru_guard = lru_c.lock().await;
-                                let mut cache_guard = lru_guard.cache.lock().await;
-
-                                match cache_guard.0.get(&rkey) {
-                                    None => {
-                                        // release locks before communicating with evict service.
-                                        drop(cache_guard);
-                                        drop(lru_guard);
-                                        // not cached ... check if node currently queued in eviction service.
-                                        if let Err(e) = evict_query_ch
-                                            .send(Query_Msg::new(
-                                                rkey.clone(),
-                                                evict_client_send_ch.clone(),
-                                            ))
-                                            .await
-                                        {
-                                            panic!("evict channel comm failed = {}", e);
-                                        }
-                                        let resp = match evict_srv_resp_ch.recv().await {
-                                            Some(resp) => resp,
-                                            None => {
-                                                panic!("communication with evict service failed")
-                                            }
-                                        };
-                                        if resp {
-                                            // wait while node is evicted...
-                                            evict_srv_resp_ch.recv().await;
-                                        }
-                                        // acqure locks
-                                        lru_guard = lru_c.lock().await;
-                                        cache_guard = lru_guard.cache.lock().await;
-                                        // create node and insert into cache but not lru yet.
-                                        let node = RNode::new_with_key(&rkey);
-                                        let arc_node = cache_guard.insert(rkey.clone(), node);
-                                        // acquire lock on node
-                                        let mut node_guard = arc_node.lock().await;
-                                        drop(cache_guard);
-                                        // add node to LRU head
-                                        let lru_len =
-                                            lru_guard.attach(&arc_node, &mut node_guard).await;
-                                        drop(lru_guard);
-                                        // populate node data from db
-                                        let rnode: RNode = node_guard
-                                            .load_from_db(dyn_client, table_name, &rkey)
-                                            .await;
-
-                                        if rnode.node.is_nil() {
-                                            println!("no key found in database: [{:?}]", rkey);
-                                            continue;
-                                        }
-
-                                        node_guard.add_reverse_edge(
-                                            ovb.clone(),
-                                            bid as u32,
-                                            id as u32,
-                                        );
-                                    }
-
-                                    Some(cache_node_) => {
-                                        // clone so scope of cache_guard borrow ends here.
-                                        let cache_node = cache_node_.clone();
-                                        // prevent overlap in nonmutable and mutable references to lru_guard
-                                        drop(cache_guard);
-                                        //   exists in lru so move from current lru position to head (i.e detach then attach)
-                                        let cache_node = cache_node.clone();
-                                        let mut node_guard = cache_node.lock().await;
-                                        //
-                                        lru_guard.move_to_head(&cache_node, &mut node_guard).await;
-                                    }
-                                }
                             } //unlock cache and edgeItem locks
                         }
 
@@ -1077,19 +999,6 @@ async fn persist(
     }
 }
 
-// Reverse_SK is the SK value for the Child of form R#<parent-node-type>#:<parent-edge-attribute-sn>
-type ReverseSK = String;
-// =======================
-// Key for Reverse Cache
-// =======================
-#[derive(Eq, PartialEq, Hash, Debug, Clone)]
-struct RKey(Uuid, ReverseSK);
-
-impl RKey {
-    fn new(n: Uuid, reverse_sk: ReverseSK) -> RKey {
-        RKey(n, reverse_sk)
-    }
-}
 
 // =======================
 //  Reverse Cache

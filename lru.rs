@@ -6,6 +6,34 @@ use tokio::sync::MutexGuard;
 
 use super::*;
 
+
+pub struct LRUcache {
+    capacity: usize,
+    pub cache: Arc<tokio::sync::Mutex<ReverseCache>>,
+    //
+    evict_submit_ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
+    //
+    pub head: Option<Arc<tokio::sync::Mutex<RNode>>>, // Option<HashValue> i.e. Option<ptr>
+    tail: Option<Arc<tokio::sync::Mutex<RNode>>>,
+}
+
+impl LRUcache {
+    pub fn new(
+        cap: usize,
+        ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
+    ) -> Arc<tokio::sync::Mutex<Self>> {
+        Arc::new(tokio::sync::Mutex::new(LRUcache {
+            capacity: cap,
+            cache: ReverseCache::new(), //
+            evict_submit_ch: ch,        //
+            head: None,
+            tail: None,
+        }))
+    }
+}
+
+// implement attach & move_to_head as trait methods.
+// Makes more sense however for these methods to be part of the LRUcache itself - just epxeriementing with traits.
 pub trait LRU {
     async fn attach(
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
@@ -22,7 +50,7 @@ pub trait LRU {
 }
 
 impl LRU for MutexGuard<'_, LRUcache> {
-    //pub async fn detach(&mut self
+    // prerequisite - node has been confirmed to be in lru-cache.
     async fn move_to_head(
         &mut self,
         node: &Arc<tokio::sync::Mutex<RNode>>,
@@ -30,7 +58,9 @@ impl LRU for MutexGuard<'_, LRUcache> {
     ) {
         // abort if node at head of lru, as subsequent attach will only add it back.
         match self.head {
-            None => panic!("found none"),
+            None => {
+                println!("LRU empty - about to populate");
+            }
             Some(ref v) => {
                 if Arc::as_ptr(v) == Arc::as_ptr(node) {
                     // node already at head
@@ -38,14 +68,13 @@ impl LRU for MutexGuard<'_, LRUcache> {
                 }
             }
         }
-
         // detach node from LRU
         match node_guard.next {
             None => {
                 // must be tail of lru
                 match node_guard.prev.as_ref().unwrap().upgrade() {
                     None => {
-                        println!("detach error: cannot upgrade prev")
+                        panic!("detach error: cannot upgrade prev")
                     }
                     Some(ref prev_) => {
                         let prev = Arc::clone(prev_);
@@ -61,7 +90,7 @@ impl LRU for MutexGuard<'_, LRUcache> {
             Some(ref next_) => {
                 // in mid lru
                 let next = Arc::clone(next_);
-                // lock next node in lru as about to relink it
+                // lock next node in lru - about to relink it
                 let mut next_guard = next.lock().await;
 
                 if let Some(ref prev_) = node_guard.prev {
@@ -85,7 +114,6 @@ impl LRU for MutexGuard<'_, LRUcache> {
                 }
             }
         }
-
         node_guard.prev = None;
         node_guard.set_next(self.head.as_ref().unwrap().clone());
 
@@ -137,7 +165,6 @@ impl LRU for MutexGuard<'_, LRUcache> {
                 println!("Error sending on Evict channel: [{}]", err);
             }
         } // unlock cache_guard, evict_node
-
         node_guard.prev = None;
         node_guard.set_next(self.head.as_ref().unwrap().clone());
 
@@ -146,27 +173,3 @@ impl LRU for MutexGuard<'_, LRUcache> {
     }
 }
 
-pub struct LRUcache {
-    capacity: usize,
-    pub cache: Arc<tokio::sync::Mutex<ReverseCache>>,
-    //
-    evict_submit_ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
-    //
-    pub head: Option<Arc<tokio::sync::Mutex<RNode>>>, // Option<HashValue> i.e. Option<ptr>
-    tail: Option<Arc<tokio::sync::Mutex<RNode>>>,
-}
-
-impl LRUcache {
-    pub fn new(
-        cap: usize,
-        ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
-    ) -> Arc<tokio::sync::Mutex<Self>> {
-        Arc::new(tokio::sync::Mutex::new(LRUcache {
-            capacity: cap,
-            cache: ReverseCache::new(), //
-            evict_submit_ch: ch,        //
-            head: None,
-            tail: None,
-        }))
-    }
-}

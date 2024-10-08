@@ -1,7 +1,7 @@
 use crate::types;
 
 use crate::node::RNode;
-use crate::{Query_Msg, RKey};
+use crate::{QueryMsg, RKey};
 
 use std::collections::{HashMap, HashSet};
 
@@ -62,7 +62,7 @@ pub fn start_service(
     table_name_: impl Into<String>,
     // channels
     mut evict_submit_rx: tokio::sync::mpsc::Receiver<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
-    mut client_query_rx: tokio::sync::mpsc::Receiver<Query_Msg>,
+    mut client_query_rx: tokio::sync::mpsc::Receiver<QueryMsg>,
     mut shutdown_ch: tokio::sync::broadcast::Receiver<u8>,
 ) -> task::JoinHandle<u32> {
     println!("evict service...started.");
