@@ -3,15 +3,15 @@
 use super::{
     as_blob2, as_bool, as_float2, as_i16, as_i16_2, as_i32_2, as_i8_2, as_int2, as_lb2, as_lblob2,
     as_lbool2, as_ldt2, as_lfloat2, as_li16_2, as_li32_2, as_li8_2, as_lint2, as_ln2, as_ls2,
-    as_luuid, as_n, as_string, as_uuid, as_vi32, as_vi8,as_string_trim_graph,
+    as_luuid, as_n, as_string, as_string_trim_graph, as_uuid, as_vi32, as_vi8,
 };
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::str::FromStr;
-use std::sync::LazyLock;
 #[warn(non_camel_case_types)]
 //#[allow(non_camel_case_types)]
 //#[warn(dead_code)]
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::{any::Any, collections::HashMap};
 //mod block {. // do not include in mod definition file
 use uuid::{self, Uuid}; //, as_vec_string};
@@ -66,10 +66,10 @@ pub const TYIX: &str = "TyIx";
 
 // Reverse edge
 //pub const OVB : &str = "OVB";           // List of UUIDs for OvBs
-pub const OVB_BID: &str = "OBID";       // List of current Batch ID in each OvB
+pub const OVB_BID: &str = "OBID"; // List of current Batch ID in each OvB
 pub const OVB_CNT: &str = "OBCNT";
-pub const OVB_ID: &str = "OID";         // List of current index for each Batch 
-pub const OVB_CUR: &str = "OCUR";  
+pub const OVB_ID: &str = "OID"; // List of current index for each Batch
+pub const OVB_CUR: &str = "OCUR";
 
 // XF values
 pub const CHILD: i8 = 1;
@@ -80,9 +80,6 @@ pub const OVB_INUSE: i8 = 5;
 pub const OVB_THRESHOLD_HIT: i8 = 6;
 
 //pub static LOAD_PROJ : LazyLock<String> = LazyLock::new(||"OvB".to_string() +  "," + OVB_BID + "," + OVB_ID + "," + OVB_CUR);
-
-
-
 
 #[derive(Debug)]
 pub struct SK_(pub String);
@@ -221,7 +218,7 @@ impl DataItem {
             op: None,
             // reverse
             tuid: None,
-            tyix: None, 
+            tyix: None,
         }
     }
 
@@ -407,7 +404,7 @@ impl From<HashMap<String, AttributeValue>> for DataItem {
                 S => di.s = as_string(v),
                 BL => di.bl = as_bool(v),
                 B => di.b = as_blob2(v),
-                DT => di.dt = as_string(v), // DateTime
+                DT => di.dt = as_string(v),            // DateTime
                 TY => di.ty = as_string_trim_graph(v), // type of node (stored with each scalar item)
                 E => di.e = as_string(v),
                 // lists
@@ -446,7 +443,7 @@ impl From<HashMap<String, AttributeValue>> for DataItem {
                 OP => {
                     di.op = as_uuid(v);
                 } // parent UID in overflow blocks
-                OVB => {},
+                OVB => {}
                 TYIX => {
                     di.tyix = as_string_trim_graph(v);
                 }

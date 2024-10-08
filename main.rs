@@ -1,25 +1,26 @@
- //#[deny(unused_imports)]
+//#[deny(unused_imports)]
 //#[warn(unused_imports)]
-#[allow(unused_imports)]
-
-mod service;
-mod types;
 mod lru;
 mod node;
+#[allow(unused_imports)]
+mod service;
+mod types;
 
 use std::collections::HashMap;
 use std::env;
-use std::string::String;
-use std::sync::{Arc, Weak};
-use std::sync::LazyLock;
 use std::mem;
+use std::string::String;
+use std::sync::LazyLock;
+use std::sync::{Arc, Weak};
 
 use node::RNode;
+
+use lru::LRU;
 
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::builders::PutRequestBuilder;
 use aws_sdk_dynamodb::types::AttributeValue;
-use aws_sdk_dynamodb::types:: WriteRequest;
+use aws_sdk_dynamodb::types::WriteRequest;
 use aws_sdk_dynamodb::Client as DynamoClient;
 //use aws_sdk_dynamodb::types::ReturnValue;
 //use aws_sdk_dynamodb::operation::batch_write_item::BatchWriteItemError;
@@ -29,11 +30,10 @@ use uuid::Uuid;
 
 use mysql_async::prelude::*;
 
-use tokio::time::{sleep, Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
 //use tokio::task::spawn;
-
 
 const CHILD_UID: u8 = 1;
 const _UID_DETACHED: u8 = 3; // soft delete. Child detached from parent.
@@ -88,13 +88,13 @@ type Puid = Uuid;
 // }
 
 struct ReverseEdge {
-    pk: AttributeValue,   // cuid
+    pk: AttributeValue, // cuid
     sk: AttributeValue, // R#sk-of-parent|x    where x is 0 for embedded and non-zero for batch id in ovb
     //
     tuid: AttributeValue, // target-uuid, either parent-uuid for embedded or ovb uuid
     tsk: String,
     tbid: i32,
-    tid: i32
+    tid: i32,
 }
 //
 struct OvBatch {
@@ -117,10 +117,10 @@ struct ParentEdge {
     eattr_nm: String,   // edge attribute name (derived from sortk)
     eattr_sn: String,   // edge attribute short name (derived from sortk)
     //
-    ovb_idx: usize,          // last ovb populated
+    ovb_idx: usize, // last ovb populated
     ovbs: Vec<Vec<OvBatch>>, //  each ovb is made up of batches. each ovb simply has a different pk - a batch shares the same pk.
-    //
-    //rvse: Vec<ReverseEdge>,
+                             //
+                             //rvse: Vec<ReverseEdge>,
 }
 
 struct PropagateScalar {
@@ -143,10 +143,10 @@ enum Operation {
 }
 
 // Message sent on Evict Queued Channel
-struct Query_Msg(RKey, tokio::sync::mpsc::Sender::<bool>);
+struct Query_Msg(RKey, tokio::sync::mpsc::Sender<bool>);
 
 impl Query_Msg {
-    fn new(rkey: RKey, resp_ch : tokio::sync::mpsc::Sender::<bool>) -> Self {
+    fn new(rkey: RKey, resp_ch: tokio::sync::mpsc::Sender<bool>) -> Self {
         Query_Msg(rkey, resp_ch)
     }
 }
@@ -165,8 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         env::var("MYSQL_PWD").expect("env variable `MYSQL_PWD` should be set in profile");
     let mysql_dbname =
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
-    let graph =
-        env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
+    let graph = env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
     let table_name = "RustGraph.dev.4";
     // ===========================
     // 2. Create a Dynamodb Client
@@ -190,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         //     println!("attr.name [{}] dt [{}]  c [{}]", attr.name, attr.dt, attr.c);
         // }
     }
-    
+
     // create broadcast channel to shutdown services
     let (shutdown_broadcast_sender, _) = broadcast::channel(1); // broadcast::channel::<u8>(1);
 
@@ -210,15 +209,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     println!("start evict service...");
     // evict service channels
     //  * queue Rkey for eviction
-    let (evict_submit_ch_p, evict_submit_rx) = tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(MAX_SP_TASKS * 5);
+    let (evict_submit_ch_p, evict_submit_rx) =
+        tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(MAX_SP_TASKS * 5);
     //  * query evict service e.g. is node in evict queue?
-    let (evict_query_ch_p, evict_query_rx) = tokio::sync::mpsc::channel::<Query_Msg>(MAX_SP_TASKS * 2);
+    let (evict_query_ch_p, evict_query_rx) =
+        tokio::sync::mpsc::channel::<Query_Msg>(MAX_SP_TASKS * 2);
     // * shutdown
     let evict_shutdown_ch = shutdown_broadcast_sender.subscribe();
-    // pending evict 
+    // pending evict
     println!("start evict service...");
     //let (pending_evict_ch_p, pending_evict_rx) = tokio::sync::mpsc::channel::<Pending_Action>(MAX_SP_TASKS * 20);
-    
+
     let evict_service = service::evict::start_service(
         dynamo_client.clone(),
         table_name,
@@ -246,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let mut conn = pool.get_conn().await.unwrap();
 
     // ============================
-    // 5. MySQL query: parent nodes 
+    // 5. MySQL query: parent nodes
     // ============================
     let mut parent_node: Vec<Uuid> = vec![];
 
@@ -255,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         .map(&mut conn, |puid| parent_node.push(puid))
         .await?;
     // =======================================
-    // 6. MySQL query: graph parent node edges 
+    // 6. MySQL query: graph parent node edges
     // =======================================
     let mut parent_edges: HashMap<Puid, HashMap<SortK, Vec<Cuid>>> = HashMap::new();
     let child_edge = "Select puid,sortk,cuid from test_childedge order by puid,sortk"
@@ -299,16 +300,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // reverse cache - contains child nodes across all puid's for all puid edges
     //let global_reverse_cache = Arc::new(std::sync::Mutex::new(ReverseCache::new()));
     let global_lru = lru::LRUcache::new(1000, evict_submit_ch_p.clone()); //let global_reverse_cache = ReverseCache::new();
-    // ==============================================================
-    // 9. spawn task to attach node edges and propagate scalar values
-    // ==============================================================
+                                                                          // ==============================================================
+                                                                          // 9. spawn task to attach node edges and propagate scalar values
+                                                                          // ==============================================================
     for puid in parent_node {
-    
         // if puid.to_string() != "8ce42327-0183-4632-9ba8-065808909144" { // a Peter Sellers Performance node
         //     continue
         // }
 
-        println!("puid  [{}]",puid.to_string());
+        println!("puid  [{}]", puid.to_string());
         // ------------------------------------------
         let p_sk_edges = match parent_edges.remove(&puid) {
             None => {
@@ -323,53 +323,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         let dyn_client = dynamo_client.clone();
         let retry_ch = retry_send_ch.clone();
         let graph_sn = graph_prefix_wdot.trim_end_matches('.').to_string();
-        let node_types = node_types.clone();        // Arc instance - single cache in heap storage
-        let lru: Arc<tokio::sync::Mutex<lru::LRUcache>> = global_lru.clone(); 
-        let evict_query_ch=evict_query_ch_p.clone();
+        let node_types = node_types.clone(); // Arc instance - single cache in heap storage
+        let lru: Arc<tokio::sync::Mutex<lru::LRUcache>> = global_lru.clone();
+        let evict_query_ch = evict_query_ch_p.clone();
         //let evict_ch = evict_submit_ch_p.clone();
-        tasks += 1;     // concurrent task counter
-        // =========================================
-        // 9.2 spawn tokio task for each parent node
-        // =========================================
+        tasks += 1; // concurrent task counter
+                    // =========================================
+                    // 9.2 spawn tokio task for each parent node
+                    // =========================================
         tokio::spawn(async move {
-
             // ============================================
             // 9.2.3 propagate child scalar data to parent
             // ============================================
 
             for (p_sk_edge, children) in p_sk_edges {
-
-                            // Container for Overflow Block Uuids, also stores all propagated data.
-                let mut ovb_pk : HashMap<String,Vec<Uuid>> = HashMap::new();
+                // Container for Overflow Block Uuids, also stores all propagated data.
+                let mut ovb_pk: HashMap<String, Vec<Uuid>> = HashMap::new();
                 let mut items: HashMap<SortK, Operation> = HashMap::new();
 
-                println!("edge {}  children: {}",p_sk_edge, children.len());
+                println!("edge {}  children: {}", p_sk_edge, children.len());
                 // =====================================================================
                 // p_node_ty : find type of puid . use sk "m|T#"  <graph>|<T,partition># //TODO : type short name should be in mysql table - saves fetching here.
                 // =====================================================================
-                let (p_node_ty, ovbs)  = fetch_edge_ty_nd(&dyn_client, &puid, &p_sk_edge , &graph_sn, &node_types, table_name).await;
+                let (p_node_ty, ovbs) = fetch_edge_ty_nd(
+                    &dyn_client,
+                    &puid,
+                    &p_sk_edge,
+                    &graph_sn,
+                    &node_types,
+                    table_name,
+                )
+                .await;
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
-               
+
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
 
                 let edge_attr_nm = p_node_ty.get_attr_nm(p_edge_attr_sn);
                 let child_ty = node_types.get(p_node_ty.get_edge_child_ty(edge_attr_nm));
                 let child_parts = child_ty.get_scalars();
                 // reverse edge item : R#<node-type-sn>#edge_sk
-                let reverse_sk: String = "R#".to_string() + p_node_ty.short_nm() + "#:" + &p_edge_attr_sn;
+                let reverse_sk: String =
+                    "R#".to_string() + p_node_ty.short_nm() + "#:" + &p_edge_attr_sn;
                 // ===================================================================
                 // 9.2.3.0 query on p_node edge and get OvBs from Nd attribute of edge
-                // ===================================================================  
-                let bat_w_req: Vec<WriteRequest> = vec![];             
-                
+                // ===================================================================
+                let bat_w_req: Vec<WriteRequest> = vec![];
+
                 for cuid in children {
                     //let cuid_p = cuid.clone();
                     // =====================================================================
                     // 9.2.3.1 for each child node's scalar partitions and scalar attributes
                     // =====================================================================
                     for (partition, attrs) in &child_parts {
-                       
-                        let mut sk_query = graph_sn.clone();     // generate sortk's for query
+                        let mut sk_query = graph_sn.clone(); // generate sortk's for query
                         sk_query.push_str("|A#");
                         sk_query.push_str(&partition);
 
@@ -422,16 +428,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                             ppg_sk.push_str("#:");
                             ppg_sk.push_str(attr_sn);
 
-
                             //let dt = ty_c.get_attr_dt(child_ty,attr_sn);
                             let dt = child_ty.get_attr_dt(attr_sn);
-                            // check if ppg_sk in query cache  
+                            // check if ppg_sk in query cache
                             let op_ppg = match items.get_mut(&ppg_sk[..]) {
                                 None => {
                                     let op = Operation::Propagate(PropagateScalar {
-                                        entry : None,
-                                        psk: p_sk_edge.clone(),         // parent edge 
-                                        sk: ppg_sk.clone(),        // child propagated scalar 
+                                        entry: None,
+                                        psk: p_sk_edge.clone(), // parent edge
+                                        sk: ppg_sk.clone(),     // child propagated scalar
                                         ls: vec![],
                                         ln: vec![],
                                         lbl: vec![],
@@ -466,9 +471,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                                             }
                                             e_p.ls.push(AttributeValue::Null(true));
                                         }
-                                        Some(v) => { e_p.ls.push(AttributeValue::S(v));
-                                                            // e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
-                                                            e_p.cuids.push(cuid);
+                                        Some(v) => {
+                                            e_p.ls.push(AttributeValue::S(v));
+                                            // e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
+                                            e_p.cuids.push(cuid);
                                         }
                                     }
                                     e_p.entry = Some(LS);
@@ -483,10 +489,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                                             }
                                             e_p.ln.push(AttributeValue::Null(true));
                                         }
-                                        Some(v) => { e_p.ln.push(AttributeValue::N(v));
-                                                             //e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
-                                                             e_p.cuids.push(cuid);
-                                            }
+                                        Some(v) => {
+                                            e_p.ln.push(AttributeValue::N(v));
+                                            //e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
+                                            e_p.cuids.push(cuid);
+                                        }
                                     }
                                     e_p.entry = Some(LN);
                                 }
@@ -512,9 +519,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                                             }
                                             e_p.lbl.push(AttributeValue::Null(true));
                                         }
-                                        Some(v) => { e_p.lbl.push(AttributeValue::Bool(v));
-                                                           //e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
-                                                           e_p.cuids.push(cuid);
+                                        Some(v) => {
+                                            e_p.lbl.push(AttributeValue::Bool(v));
+                                            //e_p.cuids.push(AttributeValue::B(Blob::new(cuid)));
+                                            e_p.cuids.push(cuid);
                                         }
                                     }
                                     e_p.entry = Some(LBL);
@@ -528,13 +536,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     }
                 }
                 // ========================================================
-                // 9.2.3 persist parent propagated data to database 
+                // 9.2.3 persist parent propagated data to database
                 // ========================================================
                 persist(
                     &dyn_client,
                     table_name,
-                    lru.clone(), 
-                    bat_w_req, 
+                    lru.clone(),
+                    bat_w_req,
                     child_ty,
                     puid,
                     reverse_sk,
@@ -546,9 +554,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 )
                 .await;
             }
-            
-  
-            
+
             // ===================================
             // 9.2.4 send complete message to main
             // ===================================
@@ -565,35 +571,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             task_rx.recv().await;
             tasks -= 1;
         }
-
     }
-    
+
     // =========================================
-    // 10.0 Wait for remaining tasks to complete 
+    // 10.0 Wait for remaining tasks to complete
     // =========================================
     while tasks > 0 {
         // wait for a task to finish...
         task_rx.recv().await;
         tasks -= 1;
-    }   
+    }
     // ==========================================================================
     // Persist all nodes in the LRU cache by submiting them to the Evict service
     // ==========================================================================
     if let Some(ref arc_) = global_lru.lock().await.head {
-
         let mut arc = arc_.clone();
         // following the linked list of nodes...
-        loop {                 
+        loop {
             {
                 let mut node_guard = arc.lock().await;
 
-                evict_submit_ch_p.send( (RKey::new(node_guard.node.clone(),node_guard.rvs_sk.clone()), arc.clone())).await;
+                evict_submit_ch_p
+                    .send((
+                        RKey::new(node_guard.node.clone(), node_guard.rvs_sk.clone()),
+                        arc.clone(),
+                    ))
+                    .await;
             }
-            arc = { let Some(ref arc_node) = arc.lock().await.next else {break};
-                    arc_node.clone()
+            arc = {
+                let Some(ref arc_node) = arc.lock().await.next else {
+                    break;
                 };
-        }   
-    }  
+                arc_node.clone()
+            };
+        }
+    }
     // ==============================
     // Shutdown support services
     // ==============================
@@ -601,7 +613,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     shutdown_broadcast_sender.send(0);
     retry_service.await;
     evict_service.await;
-    
+
     Ok(())
 }
 
@@ -609,7 +621,7 @@ async fn persist(
     dyn_client: &DynamoClient,
     table_name: &str,
     //
-    lru : Arc<tokio::sync::Mutex<lru::LRUcache>>,
+    lru: Arc<tokio::sync::Mutex<lru::LRUcache>>,
     mut bat_w_req: Vec<WriteRequest>,
     child_ty: &types::NodeType,
     //
@@ -621,22 +633,20 @@ async fn persist(
     ovb_pk: HashMap<String, Vec<Uuid>>,
     items: HashMap<SortK, Operation>,
     //
-    evict_query_ch : tokio::sync::mpsc::Sender<Query_Msg>,
-)  {
-
+    evict_query_ch: tokio::sync::mpsc::Sender<Query_Msg>,
+) {
     // create channels to communicate (to and from) lru eviction service
     // evict_resp_ch: sender - passed to eviction service so it can send its response back to this routine
     // evict_recv_ch: receiver - used by this routine to receive respone from eviction service
     let (evict_client_send_ch, mut evict_srv_resp_ch) = tokio::sync::mpsc::channel::<bool>(1);
-                                        
+
     // persist to database
     for (sk, v) in items {
-
         match v {
             Operation::Attach(_) => {}
             Operation::Propagate(mut e) => {
                 //println!("Persist Operation::Propagate [{}]",sk);
-                
+
                 //let ovbs : Vec<AttributeValue> = ovb_pk.get(&e.psk).unwrap().iter().map(|uid| AttributeValue::B(Blob::new(uid.clone().as_bytes()))).collect();
 
                 let mut finished = false;
@@ -646,71 +656,72 @@ async fn persist(
                     .item(types::PK, AttributeValue::B(Blob::new(target_uid.clone())))
                     .item(types::SK, AttributeValue::S(sk.clone()));
                 let mut put = match ovb_pk.get(&e.psk) {
-                                None => { panic!("Logic error: no key found in ovb_pk for {}",e.psk) },
-                                Some(v) => { match v.len() {
-                                                0 => put.item(types::OVB, AttributeValue::Bool(false)),
-                                                _ => put.item(types::OVB, AttributeValue::Bool(true)),
-                                             }
-                                           },
-                            };
-     
-                let mut children :Vec<Uuid> = vec![];
+                    None => {
+                        panic!("Logic error: no key found in ovb_pk for {}", e.psk)
+                    }
+                    Some(v) => match v.len() {
+                        0 => put.item(types::OVB, AttributeValue::Bool(false)),
+                        _ => put.item(types::OVB, AttributeValue::Bool(true)),
+                    },
+                };
+
+                let mut children: Vec<Uuid> = vec![];
 
                 match e.entry.unwrap() {
                     LS => {
                         if e.ls.len() <= EMBEDDED_CHILD_NODES {
-                            children = mem::take(&mut e.cuids);  
+                            children = mem::take(&mut e.cuids);
                             let embedded: Vec<_> = std::mem::take(&mut e.ls);
                             put = put.item(types::LS, AttributeValue::L(embedded));
                             finished = true;
                         } else {
                             children = e.cuids.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut children,&mut e.cuids);
+                            std::mem::swap(&mut children, &mut e.cuids);
                             let mut embedded = e.ls.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut embedded,&mut e.ls);
+                            std::mem::swap(&mut embedded, &mut e.ls);
                             put = put.item(types::LS, AttributeValue::L(embedded));
                         }
                     }
                     LN => {
                         if e.ln.len() <= EMBEDDED_CHILD_NODES {
-                            children = mem::take(&mut e.cuids);  
+                            children = mem::take(&mut e.cuids);
                             let embedded: Vec<_> = std::mem::take(&mut e.ln);
                             put = put.item(types::LN, AttributeValue::L(embedded));
                             finished = true;
                         } else {
                             children = e.cuids.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut children,&mut e.cuids);
+                            std::mem::swap(&mut children, &mut e.cuids);
                             let mut embedded = e.ln.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut embedded,&mut e.ln);
+                            std::mem::swap(&mut embedded, &mut e.ln);
                             put = put.item(types::LN, AttributeValue::L(embedded));
                         }
                     }
                     LBL => {
                         if e.lbl.len() <= EMBEDDED_CHILD_NODES {
-                            children = mem::take(&mut e.cuids);  
+                            children = mem::take(&mut e.cuids);
                             let embedded: Vec<_> = std::mem::take(&mut e.lbl);
                             put = put.item(types::LBL, AttributeValue::L(embedded));
                             finished = true;
                         } else {
                             children = e.cuids.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut children,&mut e.cuids);
+                            std::mem::swap(&mut children, &mut e.cuids);
                             let mut embedded = e.lbl.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut embedded,&mut e.lbl);
+                            std::mem::swap(&mut embedded, &mut e.lbl);
                             put = put.item(types::LBL, AttributeValue::L(embedded));
                         }
                     }
                     LB => {
                         if e.lb.len() <= EMBEDDED_CHILD_NODES {
-                            children = mem::take(&mut e.cuids);  
+                            children = mem::take(&mut e.cuids);
                             let embedded: Vec<_> = std::mem::take(&mut e.lb);
                             put = put.item(types::LB, AttributeValue::L(embedded));
                             finished = true;
                         } else {
                             children = e.cuids.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut children,&mut e.cuids);
+                            std::mem::swap(&mut children, &mut e.cuids);
                             let mut embedded = e.lbl.split_off(EMBEDDED_CHILD_NODES);
-                            std::mem::swap(&mut embedded,&mut e.lbl);
-                            put = put.item(types::LB ,AttributeValue::L(embedded));
+                            std::mem::swap(&mut embedded, &mut e.lbl);
+                            put = put.item(types::LB, AttributeValue::L(embedded));
                         }
                     }
                     _ => {
@@ -728,26 +739,26 @@ async fn persist(
                 //         let arc_rvs_item : Arc<tokio::sync::Mutex<RNode>>;
                 //         let rkey = RKey::new(child.clone(), reverse_sk.clone());
                 //         {
-                //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex 
+                //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex
                 //             let mut guard = match rcache.lock() {
                 //                 Err(e) => panic!("failed to get a lock on ReverseCache - {}",e),
-                //                 Ok(g) => g, 
+                //                 Ok(g) => g,
                 //             };
                 //             // with mutex guard, can ccess global reverse cache (using guard's support of Deref)
                 //             arc_rvs_item = guard.get(&rkey);
                 //         } // unlock outer Mutex
 
-                //                 // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.                          
+                //                 // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.
                 //                 let mut guard = arc_rvs_item.lock().await;
 
                 //                 let edge = guard.add_reverse_edge(dyn_client, table_name, target_uid.clone(), 0, 0).await;
-            
+
                 //                 //rcache.lock().unwrap().0.entry(rkey).and_modify(|e| *e=Arc::new(tokio::sync::Mutex::new(edge)));
                 //                 // if let Some(v) = rcache.lock().unwrap().0.get_mut(&rkey) {
                 //                 //     *v = Arc::new(tokio::sync::Mutex::new(edge))
                 //                 // }
                 //                 guard.update(edge);
-                //     } //unlock inner tokio::Mutex                    
+                //     } //unlock inner tokio::Mutex
                 // }
 
                 if finished {
@@ -758,12 +769,12 @@ async fn persist(
                 // add batches across ovbs until max reached
                 // =========================================
                 let mut bid: usize = 0;
-                let mut children : Vec<Uuid> = vec![];
-                
-                for ovb in ovb_pk.get(&e.psk).unwrap() {
-                    bid=0;
+                let mut children: Vec<Uuid> = vec![];
 
-                    while bid <  OV_BATCH_THRESHOLD && !finished {
+                for ovb in ovb_pk.get(&e.psk).unwrap() {
+                    bid = 0;
+
+                    while bid < OV_BATCH_THRESHOLD && !finished {
                         bid += 1;
                         let mut sk_w_bid = sk.clone();
                         sk_w_bid.push('%');
@@ -772,12 +783,12 @@ async fn persist(
                         let put = aws_sdk_dynamodb::types::PutRequest::builder();
                         let mut put = put
                             .item(types::PK, AttributeValue::B(Blob::new(ovb.clone())))
-                            .item(types::SK, AttributeValue::S(sk_w_bid)); 
+                            .item(types::SK, AttributeValue::S(sk_w_bid));
 
                         match e.entry.unwrap() {
                             LS => {
                                 if e.ls.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.ls);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                     finished = true;
@@ -787,9 +798,9 @@ async fn persist(
                                     // finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.ls.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.ls);
+                                    std::mem::swap(&mut batch, &mut e.ls);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                     // children = e.cuids.drain(..OV_MAX_BATCH_SIZE).collect();
                                     // let batch: Vec<_> = e.ls.drain(..OV_MAX_BATCH_SIZE).collect();
@@ -799,45 +810,45 @@ async fn persist(
 
                             LN => {
                                 if e.ln.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.ln);
                                     put = put.item(types::LN, AttributeValue::L(batch));
                                     finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.ln.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.ln);
+                                    std::mem::swap(&mut batch, &mut e.ln);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
 
                             LBL => {
                                 if e.lbl.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.lbl);
                                     put = put.item(types::LBL, AttributeValue::L(batch));
                                     finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.lbl.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.lbl);
+                                    std::mem::swap(&mut batch, &mut e.lbl);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
 
                             LB => {
                                 if e.lb.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.lb);
                                     put = put.item(types::LB, AttributeValue::L(batch));
                                     finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.lb.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.lb);
+                                    std::mem::swap(&mut batch, &mut e.lb);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
@@ -846,7 +857,8 @@ async fn persist(
                             }
                         }
 
-                        bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                        bat_w_req =
+                            save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
                         // if !child_ty.is_reference() {
 
@@ -855,23 +867,22 @@ async fn persist(
                         //         let arc_rvs_item : Arc<tokio::sync::Mutex<RNode>>;
                         //         let rkey = RKey::new(child.clone(), reverse_sk.clone());
                         //         {
-                        //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex 
+                        //             // while rcache is a shared ownership pointer, cannot access ReverseCache without going thru rcache's Mutex
                         //             let mut guard = match rcache.lock() {
                         //                 Err(e) => panic!("failed to get a lock on ReverseCache - {}",e),
-                        //                 Ok(g) => g, 
+                        //                 Ok(g) => g,
                         //             };
                         //             // with mutex guard, can ccess global reverse cache (using guard's support of Deref)
                         //             arc_rvs_item = guard.get(&rkey);
                         //         } // unlock outer Mutex
 
-                        //         // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.                          
+                        //         // arc_rvs_item - shared ownership of HashMap Value. Again access to Value is held inside a Mutex, so lock is required.
                         //         let mut guard = arc_rvs_item.lock().await;
 
                         //         let edge = guard.add_reverse_edge(dyn_client, table_name, ovb.clone(), bid, id).await;
                         //         //guard.update(edge);
-                        //     } //unlock inner tokio::Mutex                    
+                        //     } //unlock inner tokio::Mutex
                         // }
-
                     }
                     if finished {
                         break;
@@ -882,12 +893,10 @@ async fn persist(
                 // keep adding batches across ovbs (round robin)
                 // =============================================
                 while !finished {
-                
-                    bid+=1;
-                    let mut children : Vec<Uuid> = vec![];
+                    bid += 1;
+                    let mut children: Vec<Uuid> = vec![];
 
                     for ovb in ovb_pk.get(&e.psk).unwrap() {
-
                         let mut sk_w_bid = sk.clone();
                         sk_w_bid.push('%');
                         sk_w_bid.push_str(&bid.to_string());
@@ -899,60 +908,60 @@ async fn persist(
                         match e.entry.unwrap() {
                             LS => {
                                 if e.ls.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.ls);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                     finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.ls.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.ls);
+                                    std::mem::swap(&mut batch, &mut e.ls);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
 
                             LN => {
                                 if e.ln.len() <= OV_MAX_BATCH_SIZE {
-                                    children = mem::take(&mut e.cuids);  
+                                    children = mem::take(&mut e.cuids);
                                     let batch: Vec<_> = std::mem::take(&mut e.ln);
                                     put = put.item(types::LN, AttributeValue::L(batch));
                                     finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.ln.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.ln);
+                                    std::mem::swap(&mut batch, &mut e.ln);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
 
                             LBL => {
                                 if e.lbl.len() <= OV_MAX_BATCH_SIZE {
-                                        children = mem::take(&mut e.cuids);  
-                                        let batch: Vec<_> = std::mem::take(&mut e.lbl);
-                                        put = put.item(types::LBL, AttributeValue::L(batch));
-                                        finished = true;
+                                    children = mem::take(&mut e.cuids);
+                                    let batch: Vec<_> = std::mem::take(&mut e.lbl);
+                                    put = put.item(types::LBL, AttributeValue::L(batch));
+                                    finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.lbl.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.lbl);
+                                    std::mem::swap(&mut batch, &mut e.lbl);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
 
                             LB => {
                                 if e.lb.len() <= OV_MAX_BATCH_SIZE {
-                                        children = mem::take(&mut e.cuids);  
-                                        let batch: Vec<_> = std::mem::take(&mut e.lb);
-                                        put = put.item(types::LB, AttributeValue::L(batch));
-                                        finished = true;
+                                    children = mem::take(&mut e.cuids);
+                                    let batch: Vec<_> = std::mem::take(&mut e.lb);
+                                    put = put.item(types::LB, AttributeValue::L(batch));
+                                    finished = true;
                                 } else {
                                     children = e.cuids.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut children,&mut e.cuids);
+                                    std::mem::swap(&mut children, &mut e.cuids);
                                     let mut batch = e.lb.split_off(OV_MAX_BATCH_SIZE);
-                                    std::mem::swap(&mut batch,&mut e.lb);
+                                    std::mem::swap(&mut batch, &mut e.lb);
                                     put = put.item(types::LS, AttributeValue::L(batch));
                                 }
                             }
@@ -960,82 +969,94 @@ async fn persist(
                                 panic!("unexpected entry match in Operation::Propagate")
                             }
                         }
-                        
 
-                        bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                        bat_w_req =
+                            save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
                         if !child_ty.is_reference() {
                             let lru_c = lru.clone();
-                                   
 
                             for (id, child) in children.into_iter().enumerate() {
-
                                 // below design makes use of Mutexes to serialise access to cache
-                                // alternatively, manage addition of reverse edges via a "service" i.e. pass RKey via channel
-                                // and have a single task responsible for adding target_* data to reverse edge.
+                                // alternatively, manage addition of reverse edges via a "service" or separate load process.
                                 let rkey = RKey::new(child.clone(), reverse_sk.clone());
 
-                                    // ===============================
-                                    let mut lru_guard = lru_c.lock().await;
-                                    let mut cache_guard = lru_guard.cache.lock().await;
-                                    
-                                    match cache_guard.0.get(&rkey) {
+                                // ===============================
+                                let mut lru_guard = lru_c.lock().await;
+                                let mut cache_guard = lru_guard.cache.lock().await;
 
-                                        None => {
-                                            // check if node currently queued in eviction service - if being evicted it will have been removed from cache. Consider using NodeState??
-                                            if let Err(e) = evict_query_ch.send(Query_Msg::new(rkey.clone(), evict_client_send_ch.clone())).await {
-                                                panic!("evict channel comm failed = {}",e);
+                                match cache_guard.0.get(&rkey) {
+                                    None => {
+                                        // release locks before communicating with evict service.
+                                        drop(cache_guard);
+                                        drop(lru_guard);
+                                        // not cached ... check if node currently queued in eviction service.
+                                        if let Err(e) = evict_query_ch
+                                            .send(Query_Msg::new(
+                                                rkey.clone(),
+                                                evict_client_send_ch.clone(),
+                                            ))
+                                            .await
+                                        {
+                                            panic!("evict channel comm failed = {}", e);
+                                        }
+                                        let resp = match evict_srv_resp_ch.recv().await {
+                                            Some(resp) => resp,
+                                            None => {
+                                                panic!("communication with evict service failed")
                                             }
-                                            let resp = match evict_srv_resp_ch.recv().await {
-                                                Some(resp) => resp,
-                                                None =>  panic!("comm with evict service failed"),
-                                                };
-                                            if resp {
-                                                drop(cache_guard);
-                                                drop(lru_guard);
-                                                // wait for responce from eviction service that noode has been evicted.
-                                                evict_srv_resp_ch.recv().await;
+                                        };
+                                        if resp {
+                                            // wait while node is evicted...
+                                            evict_srv_resp_ch.recv().await;
+                                        }
+                                        // acqure locks
+                                        lru_guard = lru_c.lock().await;
+                                        cache_guard = lru_guard.cache.lock().await;
+                                        // create node and insert into cache but not lru yet.
+                                        let node = RNode::new_with_key(&rkey);
+                                        let arc_node = cache_guard.insert(rkey.clone(), node);
+                                        // acquire lock on node
+                                        let mut node_guard = arc_node.lock().await;
+                                        drop(cache_guard);
+                                        // add node to LRU head
+                                        let lru_len =
+                                            lru_guard.attach(&arc_node, &mut node_guard).await;
+                                        drop(lru_guard);
+                                        // populate node data from db
+                                        let rnode: RNode = node_guard
+                                            .load_from_db(dyn_client, table_name, &rkey)
+                                            .await;
 
-                                                lru_guard = lru_c.lock().await;
-                                                cache_guard = lru_guard.cache.lock().await;
-                                            } 
-                                            // create node and populate from db
-                                            let node = RNode::new_with_key(&rkey);
-                                            let arc_node = cache_guard.insert(rkey.clone(), node);
-                                            drop(cache_guard);
-                                            //
-                                            let mut node_guard = arc_node.lock().await;
-                                            // add node to LRU head
-                                            let lru_len = lru_guard.attach(&arc_node, &mut node_guard).await;
-                                            drop(lru_guard);
-                                            // populate node data from db
-                                            let rnode: RNode = node_guard.load_from_db(dyn_client ,table_name, &rkey).await;
+                                        if rnode.node.is_nil() {
+                                            println!("no key found in database: [{:?}]", rkey);
+                                            continue;
+                                        }
 
-                                            if rnode.node.is_nil() {
-                                                println!("no key found in database: [{:?}]",rkey);
-                                                continue;
-                                            }
-
-                                            node_guard.add_reverse_edge(ovb.clone(), bid as u32, id as u32);
-                                            
-                                        },
-                            
-                                        Some(cache_node_) => { 
-                                            // clone so scope of cache_guard borrow ends here.
-                                            let cache_node=cache_node_.clone();
-                                            // prevent overlap in nonmutable and mutable references to lru_guard
-                                            drop(cache_guard);
-                                            //   exists in lru so move from current lru position to head (i.e detach then attach)
-                                            let cache_node = cache_node.clone();
-                                            let mut node_guard = cache_node.lock().await;
-                                            //
-                                            lru_guard.move_to_head(&cache_node, &mut node_guard).await;
-                                        },
+                                        node_guard.add_reverse_edge(
+                                            ovb.clone(),
+                                            bid as u32,
+                                            id as u32,
+                                        );
                                     }
-                            } //unlock cache and edgeItem locks                    
+
+                                    Some(cache_node_) => {
+                                        // clone so scope of cache_guard borrow ends here.
+                                        let cache_node = cache_node_.clone();
+                                        // prevent overlap in nonmutable and mutable references to lru_guard
+                                        drop(cache_guard);
+                                        //   exists in lru so move from current lru position to head (i.e detach then attach)
+                                        let cache_node = cache_node.clone();
+                                        let mut node_guard = cache_node.lock().await;
+                                        //
+                                        lru_guard.move_to_head(&cache_node, &mut node_guard).await;
+                                    }
+                                }
+                            } //unlock cache and edgeItem locks
                         }
-                        
-                        if e.ls.len() == 0 && e.ln.len() == 0 && e.ln.len() == 0 && e.lb.len() == 0 {
+
+                        if e.ls.len() == 0 && e.ln.len() == 0 && e.ln.len() == 0 && e.lb.len() == 0
+                        {
                             finished = true;
                             break;
                         }
@@ -1048,27 +1069,25 @@ async fn persist(
             //print_batch(bat_w_req);
             bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
         }
-
     } // end for
-    
-        if bat_w_req.len() > 0 {
-            //print_batch(bat_w_req);
-            bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
-        }
+
+    if bat_w_req.len() > 0 {
+        //print_batch(bat_w_req);
+        bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
+    }
 }
 
 // Reverse_SK is the SK value for the Child of form R#<parent-node-type>#:<parent-edge-attribute-sn>
-type ReverseSK = String; 
+type ReverseSK = String;
 // =======================
 // Key for Reverse Cache
 // =======================
-#[derive(Eq,PartialEq, Hash, Debug, Clone)]
+#[derive(Eq, PartialEq, Hash, Debug, Clone)]
 struct RKey(Uuid, ReverseSK);
 
 impl RKey {
-
-    fn new(n : Uuid, reverse_sk : ReverseSK) -> RKey {
-        RKey(n,reverse_sk)
+    fn new(n: Uuid, reverse_sk: ReverseSK) -> RKey {
+        RKey(n, reverse_sk)
     }
 }
 
@@ -1077,26 +1096,24 @@ impl RKey {
 // =======================
 // cache responsibility is to synchronise access to db across multiple Tokio tasks on a single cache entry.
 // The state of the node edge will determine the type of update required, either embedded or OvB.
-// Each cache update will be saved to db to keep both in sync. 
+// Each cache update will be saved to db to keep both in sync.
 // All mutations of the cache hashmap need to be serialized.
 struct ReverseCache(HashMap<RKey, Arc<tokio::sync::Mutex<RNode>>>);
 
-
 impl ReverseCache {
-
-    fn new() -> Arc<Mutex<ReverseCache>> {      
+    fn new() -> Arc<Mutex<ReverseCache>> {
         Arc::new(Mutex::new(ReverseCache(HashMap::new())))
     }
 
-    fn get(&mut self, rkey: &RKey) -> Option<Arc<tokio::sync::Mutex<RNode>>> { 
-        //self.0.get(rkey).and_then(|v| Some(Arc::clone(v))) 
+    fn get(&mut self, rkey: &RKey) -> Option<Arc<tokio::sync::Mutex<RNode>>> {
+        //self.0.get(rkey).and_then(|v| Some(Arc::clone(v)))
         match self.0.get(rkey) {
-            None =>  None,
-            Some(re) => Some(Arc::clone(re))
+            None => None,
+            Some(re) => Some(Arc::clone(re)),
         }
     }
 
-    fn insert(&mut self, rkey: RKey, rnode : RNode) ->  Arc<tokio::sync::Mutex<RNode>> {
+    fn insert(&mut self, rkey: RKey, rnode: RNode) -> Arc<tokio::sync::Mutex<RNode>> {
         let arcnode = Arc::new(tokio::sync::Mutex::new(rnode));
         let y = arcnode.clone();
         self.0.insert(rkey, arcnode);
@@ -1105,7 +1122,9 @@ impl ReverseCache {
 }
 
 //static LOAD_PROJ : LazyLock<String> = LazyLock::new(||types::OVB_s ) + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR;
-static LOAD_PROJ : LazyLock<String> = LazyLock::new(||types::OVB.to_string() +  "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR);
+static LOAD_PROJ: LazyLock<String> = LazyLock::new(|| {
+    types::OVB.to_string() + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR
+});
 
 // returns node type as String, moving ownership from AttributeValue - preventing further allocation.
 async fn fetch_edge_ty_nd<'a, T: Into<String>>(
@@ -1114,12 +1133,10 @@ async fn fetch_edge_ty_nd<'a, T: Into<String>>(
     sk: &str,
     graph_sn: T,
     node_types: &'a types::NodeTypes,
-    table_name : &str,
+    table_name: &str,
 ) -> (&'a types::NodeType, Vec<Uuid>) {
-
-
     let proj = types::ND.to_owned() + "," + types::XF + "," + types::TY;
-        
+
     let result = dyn_client
         .get_item()
         .table_name(table_name)
@@ -1136,24 +1153,43 @@ async fn fetch_edge_ty_nd<'a, T: Into<String>>(
         )
     }
     let di: types::DataItem = match result.unwrap().item {
-        None => panic!("No type item found in fetch_node_type() for [{}] [{}]", uid, sk),
+        None => panic!(
+            "No type item found in fetch_node_type() for [{}] [{}]",
+            uid, sk
+        ),
         Some(v) => v.into(),
     };
 
-    let ovb_start_idx = di.xf.as_ref().expect("xf is None").iter().filter(|&&v| v<4).fold(0,|a,_| a+1);  // xf idx entry of first Ovb Uuid
-    if ovb_start_idx > EMBEDDED_CHILD_NODES {        
-        panic!("OvB inconsistency: XF embedded entry {} does not match EMBEDDED_CHILD_NODES {}",ovb_start_idx,EMBEDDED_CHILD_NODES);
+    let ovb_start_idx = di
+        .xf
+        .as_ref()
+        .expect("xf is None")
+        .iter()
+        .filter(|&&v| v < 4)
+        .fold(0, |a, _| a + 1); // xf idx entry of first Ovb Uuid
+    if ovb_start_idx > EMBEDDED_CHILD_NODES {
+        panic!(
+            "OvB inconsistency: XF embedded entry {} does not match EMBEDDED_CHILD_NODES {}",
+            ovb_start_idx, EMBEDDED_CHILD_NODES
+        );
     }
 
-    let ovb_cnt = di.xf.expect("xf is None").iter().filter(|&&v| v==4).fold(0,|a,_| a+1);
+    let ovb_cnt = di
+        .xf
+        .expect("xf is None")
+        .iter()
+        .filter(|&&v| v == 4)
+        .fold(0, |a, _| a + 1);
     if ovb_cnt > MAX_OV_BLOCKS {
-        panic!("OvB inconsistency: XF attribute contains {} entry, MAX_OV_BLOCKS is {}",ovb_cnt,MAX_OV_BLOCKS);
+        panic!(
+            "OvB inconsistency: XF attribute contains {} entry, MAX_OV_BLOCKS is {}",
+            ovb_cnt, MAX_OV_BLOCKS
+        );
     }
 
     let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();
 
     (node_types.get(&di.ty.expect("ty is None")), ovb_pk)
-
 }
 
 async fn save_item(
@@ -1163,7 +1199,6 @@ async fn save_item(
     put: PutRequestBuilder,
     table_name: &str,
 ) -> Vec<WriteRequest> {
-
     match put.build() {
         Err(err) => {
             println!("error in write_request builder: {}", err);
@@ -1209,7 +1244,7 @@ async fn persist_dynamo_batch(
                 for (_, v) in resp.unprocessed_items.unwrap() {
                     println!("persist_dynamo_batch, unprocessed items..delay 2secs");
                     sleep(Duration::from_millis(2000)).await;
-                    let resp = retry_ch.send(v).await;                // retry_ch auto deref'd to access method send.
+                    let resp = retry_ch.send(v).await; // retry_ch auto deref'd to access method send.
 
                     if let Err(err) = resp {
                         panic!("Error sending on retry channel : {}", err);
