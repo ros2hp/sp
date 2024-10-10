@@ -27,7 +27,7 @@ pub struct RNode {
     pub target_bid: Vec<AttributeValue>,
     pub target_id: Vec<AttributeValue>,
     // metadata that describes how to populate target* into db attributes when persisted
-    pub ovb: Vec<Uuid>,  // Vec<Ovb<Vec<Batch>>>
+    pub ovb: Vec<Uuid>,  // Uuid of OvB
     pub obid: Vec<u32>,  // current batch id in each OvB
     pub obcnt: Vec<u32>, // edge count in batch
     pub oblen: Vec<u32>, // count of itmes in current batch across OvBs
@@ -134,7 +134,8 @@ impl RNode {
         self.target_bid
             .push(AttributeValue::N(target_bid.to_string()));
         self.target_id
-            .push(AttributeValue::N(target_bid.to_string()));
+            .push(AttributeValue::N(target_id.to_string()));
+        
     }
 
     pub fn set_prev(&mut self, v: Weak<tokio::sync::Mutex<RNode>>) {

@@ -92,22 +92,22 @@ type Puid = Uuid;
 //      xf: Vec<AttributeValue>, // used in uid-predicate 3 : ovefflow UID, 4 : overflow block full
 // }
 
-struct ReverseEdge {
-    pk: AttributeValue, // cuid
-    sk: AttributeValue, // R#sk-of-parent|x    where x is 0 for embedded and non-zero for batch id in ovb
-    //
-    tuid: AttributeValue, // target-uuid, either parent-uuid for embedded or ovb uuid
-    tsk: String,
-    tbid: i32,
-    tid: i32,
-}
+// struct ReverseEdge {
+//     pk: AttributeValue, // cuid
+//     sk: AttributeValue, // R#sk-of-parent|x    where x is 0 for embedded and non-zero for batch id in ovb
+//     //
+//     tuid: AttributeValue, // target-uuid, either parent-uuid for embedded or ovb uuid
+//     tsk: String,
+//     tbid: i32,
+//     tid: i32,
+// }
 //
-struct OvBatch {
-    pk: Uuid, // ovb Uuid
-    //
-    nd: Vec<AttributeValue>, //uuid.UID // list of node UIDs, overflow block UIDs, oveflow index UIDs
-    xf: Vec<AttributeValue>, // used in uid-predicate 1 : c-UID, 2 : c-UID is soft deleted, 3 : ovefflow UID, 4 : overflow block ful
-}
+// struct OvBatch {
+//     pk: Uuid, // ovb Uuid
+//     //
+//     nd: Vec<AttributeValue>, //uuid.UID // list of node UIDs, overflow block UIDs, oveflow index UIDs
+//     xf: Vec<AttributeValue>, // used in uid-predicate 1 : c-UID, 2 : c-UID is soft deleted, 3 : ovefflow UID, 4 : overflow block ful
+// }
 
 struct ParentEdge {
     //
@@ -122,9 +122,9 @@ struct ParentEdge {
     eattr_nm: String,   // edge attribute name (derived from sortk)
     eattr_sn: String,   // edge attribute short name (derived from sortk)
     //
-    ovb_idx: usize, // last ovb populated
-    ovbs: Vec<Vec<OvBatch>>, //  each ovb is made up of batches. each ovb simply has a different pk - a batch shares the same pk.
-                             //
+    // ovb_idx: usize, // last ovb populated
+    // ovbs: Vec<Vec<OvBatch>>, //  each ovb is made up of batches. each ovb simply has a different pk - a batch shares the same pk.
+    //                          //
                              //rvse: Vec<ReverseEdge>,
 }
 
@@ -143,7 +143,7 @@ struct PropagateScalar {
 }
 
 enum Operation {
-    Attach(ParentEdge),
+    Attach(ParentEdge),              // not used
     Propagate(PropagateScalar),
 }
 
@@ -551,7 +551,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     child_ty,
                     puid,
                     reverse_sk,
-                    graph_sn.as_str(),
                     &retry_ch,
                     ovb_pk,
                     items,
@@ -559,7 +558,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 )
                 .await;
             }
-
             // ===================================
             // 9.2.4 send complete message to main
             // ===================================
@@ -596,13 +594,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             {
                 let mut node_guard = arc.lock().await;
 
-                evict_submit_ch_p
+                if let Err(err) = evict_submit_ch_p 
                     .send((
                         RKey::new(node_guard.node.clone(), node_guard.rvs_sk.clone()),
                         arc.clone(),
                     ))
-                    .await;
-            }
+                    .await {
+                        panic!("Error on evict_submit_ch channel [{}]",err);
+                    }
+                }
             arc = {
                 let Some(ref arc_node) = arc.lock().await.next else {
                     break;
@@ -633,7 +633,6 @@ async fn persist(
     target_uid: Uuid,
     reverse_sk: String,
     //
-    graph_sn: &str,
     retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     ovb_pk: HashMap<String, Vec<Uuid>>,
     items: HashMap<SortK, Operation>,
@@ -746,8 +745,8 @@ async fn persist(
                             , &mut evict_srv_resp_ch
                             , &target_uid
                             , 0
-                            , 0
-                        );
+                            , id)
+                            .await;
                     }
                 }
 
@@ -863,9 +862,9 @@ async fn persist(
                                     , evict_client_send_ch.clone()
                                     , &mut evict_srv_resp_ch
                                     , &ovb
-                                    , 0
-                                    , 0
-                                );
+                                    , bid
+                                    , id)
+                                    .await;
                             }
                         }
                     }
@@ -972,7 +971,8 @@ async fn persist(
                                     , &mut evict_srv_resp_ch
                                     , &ovb
                                     , bid
-                                    , id);
+                                    , id)
+                                    .await;
 
                             } //unlock cache and edgeItem locks
                         }

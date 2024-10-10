@@ -5,55 +5,39 @@ use crate::{QueryMsg, RKey};
 
 use std::collections::{HashMap, HashSet};
 
-use std::sync::mpsc::{Receiver, RecvError, SyncSender};
-use std::sync::{Arc, Mutex};
-use std::thread::{self};
-//use std::time::{Duration, Instant};
-//use std::error::Error;
-use core::task::Poll;
+use std::sync::{Arc};
 use std::mem;
-use std::result::Result;
-use std::{env, path::PathBuf};
-//use std::sync::{LockResult,MutexGuard};
-//use std::io::{Error};//,ErrorKind};
 //
-use aws_sdk_dynamodb::operation::batch_write_item::BatchWriteItemError;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeValue;
-use aws_sdk_dynamodb::types::WriteRequest;
 use aws_sdk_dynamodb::Client as DynamoClient;
-//
-// use crate::aws_smithy_runtime_api::client::result::SdkError;
-// use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
-//
-//use clap::Parser;
-//use aws_sdk_dynamodb::{Error};
-use tokio::sync::mpsc;
+use aws_sdk_dynamodb::operation::update_item::{UpdateItemOutput,UpdateItemError};
+use aws_sdk_dynamodb::config::http::HttpResponse;
+
+use aws_smithy_runtime_api::client::result::SdkError;
+
 use tokio::time::{sleep, Duration, Instant};
-//use tokio::sync::mpsc;
-use tokio::sync::broadcast;
 use tokio::task;
-//use tokio::runtime::Runtime;
-use tokio::runtime::Handle;
 
 use uuid::Uuid;
 
 const MAX_EVICT_TASKS: u8 = 9;
 
-struct Pending_Eviction(HashSet<RKey>);
+// pending eviction container
+struct Pending(HashSet<RKey>);
 
-impl Pending_Eviction {
+impl Pending {
     fn new() -> Self {
-        Pending_Eviction(HashSet::new())
+        Pending(HashSet::new())
     }
 }
 
-// holding container for client query response
-struct Query_Client(HashMap<RKey, tokio::sync::mpsc::Sender<bool>>);
+//  container for clients querying evict service
+struct QueryClient(HashMap<RKey, tokio::sync::mpsc::Sender<bool>>);
 
-impl Query_Client {
+impl QueryClient {
     fn new() -> Self {
-        Query_Client(HashMap::new())
+        QueryClient(HashMap::new())
     }
 }
 
@@ -69,49 +53,48 @@ pub fn start_service(
 
     let table_name = table_name_.into();
 
-    //let buf = RetryBuf::A;
-
-    let mut start = Instant::now();
+    //let mut start = Instant::now();
 
     println!("start evict service: table [{}] ", table_name);
 
-    let mut pending_eviction = Pending_Eviction::new();
-    let mut query_client = Query_Client::new();
-    let mut evict_tasks = 0;
+    let mut pending = Pending::new();
+    let mut query_client = QueryClient::new();
+    let mut tasks = 0;
 
+    // evict channel used to acknowledge to a waiting client that the associated node has completed eviction.
     let (evict_completed_send_ch, mut evict_completed_rx) =
         tokio::sync::mpsc::channel::<RKey>(MAX_EVICT_TASKS as usize);
+
     //let backoff_queue : VecDeque = VecDeque::new();
     let dyn_client = dynamo_client.clone();
     let tbl_name = table_name.clone();
     // evict service only handles
     let evict_server = tokio::spawn(async move {
         loop {
-            //let evict_completed_send_ch_=evict_completed_send_ch.clone();
-
+            //let evict_complete_send_ch_=evict_completed_send_ch.clone();
             tokio::select! {
                 //biased;         // removes random number generation - normal processing will determine order so select! can follow it.
                 // note: recv() is cancellable, meaning select! can cancel a recv() without loosing data in the channel.
                 // select! will be forced to cancel recv() if another branch event happens e.g. recv() on shutdown_channel.
                 Some((rkey, arc_node)) = evict_submit_rx.recv() => {
 
-                    pending_eviction.0.insert(rkey.clone());
+                    pending.0.insert(rkey.clone());
 
-                    evict_tasks += 1;
+                    tasks += 1;
 
-                    if evict_tasks >= MAX_EVICT_TASKS {
+                    if tasks >= MAX_EVICT_TASKS {
 
                         // block until persist done
                         let dyn_client_ = dyn_client.clone();
                         let tbl_name_ = tbl_name.clone();
-                        let evict_completed_send_ch_=evict_completed_send_ch.clone();
+                        let evict_complete_send_ch_=evict_completed_send_ch.clone();
 
                         persist_rnode(
                             &dyn_client_
                            ,tbl_name_
                            ,&rkey
                            ,arc_node.clone()
-                           ,evict_completed_send_ch_
+                           ,evict_complete_send_ch_
                         ).await;
 
                     } else {
@@ -119,7 +102,7 @@ pub fn start_service(
                         // spawn async task to persist node
                         let dyn_client_ = dyn_client.clone();
                         let tbl_name_ = tbl_name.clone();
-                        let evict_completed_send_ch_=evict_completed_send_ch.clone();
+                        let evict_complete_send_ch_=evict_completed_send_ch.clone();
 
                         tokio::spawn(async move {
 
@@ -129,7 +112,7 @@ pub fn start_service(
                                 ,tbl_name_
                                 ,&rkey
                                 ,arc_node.clone()
-                                ,evict_completed_send_ch_
+                                ,evict_complete_send_ch_
                             ).await;
 
                         });
@@ -138,12 +121,14 @@ pub fn start_service(
 
                 Some(evict_rkey) = evict_completed_rx.recv() => {
 
-                    evict_tasks-=1;
-                    pending_eviction.0.remove(&evict_rkey);
-                    // send to client if waiting on pending channel
+                    tasks-=1;
+                    pending.0.remove(&evict_rkey);
+                    // send to client if one is waiting on query channel
                     if let Some(client_ch) = query_client.0.get(&evict_rkey) {
                         // send ack of completed eviction to waiting client
-                        client_ch.send(true).await;
+                        if let Err(err) = client_ch.send(true).await {
+                            panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
+                        }
                         //
                         query_client.0.remove(&evict_rkey);
                     }
@@ -151,21 +136,35 @@ pub fn start_service(
 
                 Some(query_msg) = client_query_rx.recv() => {
 
-                    match pending_eviction.0.contains(&query_msg.0) {
+                    let result = match pending.0.contains(&query_msg.0) {
                         true => {
                             query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
-                            query_msg.1.send(true).await;
+                            true
                             },
-                        false => {query_msg.1.send(false).await;},
-                    }
+                        false => false
+                    };
+                    if let Err(err) = query_msg.1.send(result).await {
+                        panic!("Error in sending query_msg [{}]",err)
+                    };
                 },
 
                 _ = shutdown_ch.recv() => {
-                        println!("Shutdown of evict service started. Evicting all nodes on lru...");
-                    },
-
-                else => {},
-
+                        println!("Shutdown of evict service started. Waiting for remaining evict tasks to complete...");
+                        while tasks > 0 {
+                        println!("...waiting on {} tasks",tasks);
+                           let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("none...")};
+                            tasks-=1;
+                            // send to client if one is waiting on query channel. Does not block as buffer is 1.
+                            if let Some(client_ch) = query_client.0.get(&evict_rkey) {
+                                // send ack of completed eviction to waiting client
+                                if let Err(err) = client_ch.send(true).await {
+                                    panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
+                                }
+                                //
+                                query_client.0.remove(&evict_rkey);
+                            }  
+                        }
+                },
             }
         } // end-loop
     });
@@ -184,34 +183,34 @@ async fn persist_rnode(
     // ASSUMPTION: most nodes have less than embedded edges so update with list_append
     // remember that Dynamodb will scan the entire List attribute before appending, so List should be relatively small < 10000.
     let mut node = arc_node.lock().await;
-    let rvs_sk: String = node.rvs_sk.clone();
     let table_name: String = table_name_.into();
     let mut target_uid: Vec<AttributeValue>;
     let mut target_bid: Vec<AttributeValue>;
     let mut target_id: Vec<AttributeValue>;
     let mut update_expression: &str;
     let edge_cnt = node.target_uid.len();
-    let init_cnt = node.init_cnt;
+    let init_cnt = node.init_cnt as usize;
 
-    if init_cnt <= crate::EMBEDDED_CHILD_NODES as u32 {
-        if node.target_uid.len() <= crate::EMBEDDED_CHILD_NODES - init_cnt as usize {
+    if init_cnt <= crate::EMBEDDED_CHILD_NODES  {
+
+        if node.target_uid.len() <= crate::EMBEDDED_CHILD_NODES - init_cnt {
             // consume all of node.target*
             target_uid = mem::take(&mut node.target_uid);
             target_bid = mem::take(&mut node.target_bid);
             target_id = mem::take(&mut node.target_id);
         } else {
-            // consume some of node.target*
+            // consume portion of node.target*
             target_uid = node
                 .target_uid
-                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt as usize);
+                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
             std::mem::swap(&mut target_uid, &mut node.target_uid);
             target_bid = node
                 .target_bid
-                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt as usize);
+                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
             std::mem::swap(&mut target_bid, &mut node.target_bid);
             target_id = node
                 .target_id
-                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt as usize);
+                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
             std::mem::swap(&mut target_id, &mut node.target_id);
         }
 
@@ -223,7 +222,7 @@ async fn persist_rnode(
             update_expression = "SET #target=LIST_APPEND(#target, :tuid), #bid=LIST_APPEND(#bid,:bid), #id=LIST_APPEND(#id,:id), #cnt = #cnt+:cnt";
         }
         // update edge item
-        let mut result = dyn_client
+        let result = dyn_client
             .update_item()
             .table_name(table_name.clone())
             .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone())))
@@ -241,6 +240,9 @@ async fn persist_rnode(
             //.return_values(ReturnValue::AllNew)
             .send()
             .await;
+
+        handle_result(result);
+
     }
     // consume the target_* fields by moving them into overflow batches and persisting the batch
     while node.target_uid.len() > 0 {
@@ -256,12 +258,12 @@ async fn persist_rnode(
                 node.ocur = Some(node.ovb.len() as u8 - 1);
             }
             Some(ocur) => {
-                let oblen: u32 = node.oblen[ocur as usize];
+                let oblen: usize = node.oblen[ocur as usize] as usize;
 
-                if crate::OV_MAX_BATCH_SIZE as u32 - oblen > 0 {
+                if crate::OV_MAX_BATCH_SIZE - oblen > 0 {
                     // use remaining space in batch
-                    if node.target_uid.len() as u32
-                        <= crate::OV_MAX_BATCH_SIZE as u32 - oblen as u32
+                    if node.target_uid.len() 
+                        <= crate::OV_MAX_BATCH_SIZE - oblen 
                     {
                         target_uid = mem::take(&mut node.target_uid);
                         target_bid = mem::take(&mut node.target_bid);
@@ -321,7 +323,7 @@ async fn persist_rnode(
 
                 update_expression = "SET #target = :tuid, #bid = :bid, #id = id";
 
-                let mut result = dyn_client
+                let result = dyn_client
                     .update_item()
                     .table_name(table_name.clone())
                     .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone())))
@@ -337,6 +339,8 @@ async fn persist_rnode(
                     //.return_values(ReturnValue::AllNew)
                     .send()
                     .await;
+
+                handle_result(result);
             }
         }
     } // end while
@@ -344,7 +348,7 @@ async fn persist_rnode(
     if node.ovb.len() > 0 {
         update_expression = "SET #cnt = :cnt, #ovb = :ovb, #obid = :obid, #ocur = :ocur";
         let cnt = node.ovb.len() + init_cnt as usize;
-        let mut result = dyn_client
+        let result = dyn_client
             .update_item()
             .table_name(table_name.clone())
             .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone())))
@@ -362,6 +366,8 @@ async fn persist_rnode(
             //.return_values(ReturnValue::AllNew)
             .send()
             .await;
+
+        handle_result(result);
     }
     // send evict completed msg to waiting client
     if let Err(err) = evict_completed_send_ch.send(rkey.clone()).await {
@@ -369,5 +375,22 @@ async fn persist_rnode(
             "Sending completed evict msg to waiting client failed: {}",
             err
         );
+    }
+}
+
+fn  handle_result(result: Result<UpdateItemOutput, SdkError<UpdateItemError, HttpResponse>> ) {
+    
+    match result {
+        Ok(_out) => {}
+        Err(err) => {
+            match err {
+                SdkError::ConstructionFailure(_cf) => {},
+                SdkError::TimeoutError(_te) => {},
+                SdkError::DispatchFailure(_df) => {},
+                SdkError::ResponseError(_re) => {},
+                SdkError::ServiceError(_se) => {},
+                _ => {},
+            }
+        }
     }
 }

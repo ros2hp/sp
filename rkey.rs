@@ -61,9 +61,6 @@ impl RKey {
                 // acquire lock on node
                 let mut node_guard = arc_node.lock().await;
                 drop(cache_guard);
-                // add node to LRU head
-                let lru_len =
-                    lru_guard.attach(&arc_node, &mut node_guard).await;
                 drop(lru_guard);
                 // populate node data from db
                 let rnode: RNode = node_guard

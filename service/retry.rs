@@ -1,22 +1,7 @@
-use std::any::Any;
-use std::borrow::Cow;
+
 use std::collections::HashMap;
-use std::fmt::format;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::sync::mpsc::{sync_channel, Receiver, RecvError, SyncSender};
-use std::sync::{Arc, Mutex};
-use std::thread::{self};
 //use std::time::{Duration, Instant};
-//use std::error::Error;
-use core::task::Poll;
-use std::result::Result;
-use std::{env, path::PathBuf};
-//use std::sync::{LockResult,MutexGuard};
-//use std::io::{Error};//,ErrorKind};
 //
-use aws_sdk_dynamodb::operation::batch_write_item::BatchWriteItemError;
-use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::types::WriteRequest;
 use aws_sdk_dynamodb::Client as DynamoClient;
@@ -24,17 +9,10 @@ use aws_sdk_dynamodb::Client as DynamoClient;
 // use crate::aws_smithy_runtime_api::client::result::SdkError;
 // use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
 //
-//use clap::Parser;
-//use aws_sdk_dynamodb::{Error};
-use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 //use tokio::sync::mpsc;
-use tokio::sync::broadcast;
 use tokio::task;
 //use tokio::runtime::Runtime;
-use tokio::runtime::Handle;
-
-use uuid::Uuid;
 
 const DYNAMO_BAT_SIZE: usize = 25;
 
@@ -316,7 +294,7 @@ pub fn start_service(
 async fn persist_dynamo_batch(
     dynamo_client: &DynamoClient,
     bat_w_req: Vec<WriteRequest>,
-    retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
+    _retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     table_name: impl Into<String>,
 ) -> Vec<WriteRequest> {
     let bat_w_outp = dynamo_client

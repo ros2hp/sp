@@ -8,11 +8,7 @@ use super::{
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::str::FromStr;
 #[warn(non_camel_case_types)]
-//#[allow(non_camel_case_types)]
-//#[warn(dead_code)]
-use std::sync::Arc;
-use std::sync::LazyLock;
-use std::{any::Any, collections::HashMap};
+use std::{collections::HashMap};
 //mod block {. // do not include in mod definition file
 use uuid::{self, Uuid}; //, as_vec_string};
 
