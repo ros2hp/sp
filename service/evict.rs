@@ -21,7 +21,7 @@ use tokio::task;
 
 use uuid::Uuid;
 
-const MAX_EVICT_TASKS: u8 = 9;
+const MAX_EVICT_TASKS: u8 = 20;
 
 // pending eviction container
 struct Pending(HashSet<RKey>);
@@ -48,7 +48,7 @@ pub fn start_service(
     mut evict_submit_rx: tokio::sync::mpsc::Receiver<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
     mut client_query_rx: tokio::sync::mpsc::Receiver<QueryMsg>,
     mut shutdown_ch: tokio::sync::broadcast::Receiver<u8>,
-) -> task::JoinHandle<u32> {
+) -> task::JoinHandle<()> {
     println!("evict service...started.");
 
     let table_name = table_name_.into();
@@ -151,10 +151,10 @@ pub fn start_service(
                 _ = shutdown_ch.recv() => {
                         println!("Shutdown of evict service started. Waiting for remaining evict tasks to complete...");
                         while tasks > 0 {
-                        println!("...waiting on {} tasks",tasks);
-                           let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("none...")};
+                            println!("...waiting on {} tasks",tasks);
+                            let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};
                             tasks-=1;
-                            // send to client if one is waiting on query channel. Does not block as buffer is 1.
+                            // send to client if one is waiting on query channel. Does not block as buffer size is 1.
                             if let Some(client_ch) = query_client.0.get(&evict_rkey) {
                                 // send ack of completed eviction to waiting client
                                 if let Err(err) = client_ch.send(true).await {
@@ -164,11 +164,14 @@ pub fn start_service(
                                 query_client.0.remove(&evict_rkey);
                             }  
                         }
+                        // exit loop
+                        break;
                 },
             }
         } // end-loop
     });
     evict_server
+
 }
 
 async fn persist_rnode(
@@ -180,8 +183,7 @@ async fn persist_rnode(
 ) {
     // at this point, cache is source-of-truth updated with db values if edge exists.
     // use db cache values to decide nature of updates to db
-    // ASSUMPTION: most nodes have less than embedded edges so update with list_append
-    // remember that Dynamodb will scan the entire List attribute before appending, so List should be relatively small < 10000.
+    // Note for LIST_APPEND Dynamodb will scan the entire attribute value before appending, so List should be relatively small < 10000.
     let mut node = arc_node.lock().await;
     let table_name: String = table_name_.into();
     let mut target_uid: Vec<AttributeValue>;
@@ -369,7 +371,7 @@ async fn persist_rnode(
 
         handle_result(result);
     }
-    // send evict completed msg to waiting client
+    // send task completed msg to evict service
     if let Err(err) = evict_completed_send_ch.send(rkey.clone()).await {
         println!(
             "Sending completed evict msg to waiting client failed: {}",

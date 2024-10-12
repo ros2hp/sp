@@ -903,6 +903,16 @@ impl NodeType {
         );
     }
 
+    pub fn add_rvs_edge(&self, name : &str) -> bool {
+
+        for v in self {
+            if v.dt.as_str() == "Nd" && name == v.name {
+                return v.rvsEdge
+            }
+        }
+        panic!("Expected to find edge {}",name);
+    }
+
     pub fn get_attr_sn(&self, attr_nm: &str) -> &str {
         for attr in self {
             if attr.name == attr_nm {
@@ -1190,6 +1200,7 @@ pub async fn fetch_graph_types(
                 //incP: v.incp,
                 ix: v.ix.unwrap_or(String::new()),
                 card: "1:N".to_string(),
+                rvsEdge: v.rvsEdge.unwrap_or(false),
             }
         } else {
             // check if Ty is a tnown Type
@@ -1205,6 +1216,7 @@ pub async fn fetch_graph_types(
                     //incp: v.incp,
                     ix: v.ix.unwrap_or(String::new()),
                     card: "1:1".to_string(),
+                    rvsEdge: v.rvsEdge.unwrap_or(false),
                 }
             } else {
                 // scalar
@@ -1219,9 +1231,9 @@ pub async fn fetch_graph_types(
                     ix: v.ix.unwrap_or(String::new()),
                     card: "".to_string(),
                     ty: "".to_string(),
+                    rvsEdge: v.rvsEdge.unwrap_or(false),
                 }
             }
-            //}
         };
 
         let mut nm = v.nm.unwrap();

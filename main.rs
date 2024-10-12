@@ -256,13 +256,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ============================
     let mut parent_node: Vec<Uuid> = vec![];
 
-    let parent_edge = "SELECT Uid FROM Edge_test order by cnt desc"
+    let _parent_edge = "SELECT Uid FROM Edge_test order by cnt desc"
         .with(())
         .map(&mut conn, |puid| parent_node.push(puid))
         .await?;
-    // =======================================
-    // 6. MySQL query: graph parent node edges
-    // =======================================
+    // =======================================================
+    // 6. MySQL query: load all parent node edges into memory (TODO: batch query)
+    // =======================================================
     let mut parent_edges: HashMap<Puid, HashMap<SortK, Vec<Cuid>>> = HashMap::new();
     let child_edge = "Select puid,sortk,cuid from test_childedge order by puid,sortk"
         .with(())
@@ -304,14 +304,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         tokio::sync::mpsc::channel::<Vec<aws_sdk_dynamodb::types::WriteRequest>>(MAX_SP_TASKS);
     // reverse cache - contains child nodes across all puid's for all puid edges
     //let global_reverse_cache = Arc::new(std::sync::Mutex::new(ReverseCache::new()));
-    let global_lru = lru::LRUcache::new(1000, evict_submit_ch_p.clone()); //let global_reverse_cache = ReverseCache::new();
-                                                                          // ==============================================================
-                                                                          // 9. spawn task to attach node edges and propagate scalar values
-                                                                          // ==============================================================
+    let global_lru = lru::LRUcache::new(20, evict_submit_ch_p.clone()); //let global_reverse_cache = ReverseCache::new();
+    // ===============================================================================
+    // 9. process each parent_node and its associated edges (child nodes) in parallel
+    // ===============================================================================
     for puid in parent_node {
-        // if puid.to_string() != "8ce42327-0183-4632-9ba8-065808909144" { // a Peter Sellers Performance node
-        //     continue
-        // }
+        if puid.to_string() != "5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
+            continue
+        }
+        println!("Found movie.................==============================================");
 
         println!("puid  [{}]", puid.to_string());
         // ------------------------------------------
@@ -331,11 +332,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         let node_types = node_types.clone(); // Arc instance - single cache in heap storage
         let lru: Arc<tokio::sync::Mutex<lru::LRUcache>> = global_lru.clone();
         let evict_query_ch = evict_query_ch_p.clone();
-        //let evict_ch = evict_submit_ch_p.clone();
+
         tasks += 1; // concurrent task counter
-                    // =========================================
-                    // 9.2 spawn tokio task for each parent node
-                    // =========================================
+        // =========================================
+        // 9.2 spawn tokio task for each parent node
+        // =========================================
         tokio::spawn(async move {
             // ============================================
             // 9.2.3 propagate child scalar data to parent
@@ -350,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 // =====================================================================
                 // p_node_ty : find type of puid . use sk "m|T#"  <graph>|<T,partition># //TODO : type short name should be in mysql table - saves fetching here.
                 // =====================================================================
-                let (p_node_ty, ovbs) = fetch_edge_ty_nd(
+                let (p_node_ty, ovbs) = fetch_p_edge_meta(
                     &dyn_client,
                     &puid,
                     &p_sk_edge,
@@ -363,10 +364,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
 
-                let edge_attr_nm = p_node_ty.get_attr_nm(p_edge_attr_sn);
-                let child_ty = node_types.get(p_node_ty.get_edge_child_ty(edge_attr_nm));
-                let child_parts = child_ty.get_scalars();
-                // reverse edge item : R#<node-type-sn>#edge_sk
+                let p_edge_attr_nm = p_node_ty.get_attr_nm(p_edge_attr_sn);
+                let add_rvs_edge = p_node_ty.add_rvs_edge(p_edge_attr_nm);
+                let child_ty = node_types.get(p_node_ty.get_edge_child_ty(p_edge_attr_nm));
+                //let child_ty = node_types.get(p_node_ty.get_edge_child_ty(p_edge_attr_sn));
+                //let add_rvs_edge = child_ty.get_add_rvs_edge(p_edge_attr_sn);
+                let child_scalar_attr = child_ty.get_scalars();
+                // check if child type has defined an edge back to parent - if not add a reverse edge to child
+
+                // reverse edge item : R#<parent-node-type-sn>#:edge_sk (R#P#:D) as saved in child node
                 let reverse_sk: String =
                     "R#".to_string() + p_node_ty.short_nm() + "#:" + &p_edge_attr_sn;
                 // ===================================================================
@@ -379,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     // =====================================================================
                     // 9.2.3.1 for each child node's scalar partitions and scalar attributes
                     // =====================================================================
-                    for (partition, attrs) in &child_parts {
+                    for (partition, attrs) in &child_scalar_attr {
                         let mut sk_query = graph_sn.clone(); // generate sortk's for query
                         sk_query.push_str("|A#");
                         sk_query.push_str(&partition);
@@ -540,15 +546,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                         }
                     }
                 }
-                // ========================================================
-                // 9.2.3 persist parent propagated data to database
-                // ========================================================
+                // ======================================================
+                // 9.2.3 persist parent nodes propagated data to database
+                // ======================================================
                 persist(
                     &dyn_client,
                     table_name,
                     lru.clone(),
                     bat_w_req,
-                    child_ty,
+                    add_rvs_edge,
                     puid,
                     reverse_sk,
                     &retry_ch,
@@ -592,6 +598,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         // following the linked list of nodes...
         loop {
             {
+
                 let mut node_guard = arc.lock().await;
 
                 if let Err(err) = evict_submit_ch_p 
@@ -602,7 +609,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     .await {
                         panic!("Error on evict_submit_ch channel [{}]",err);
                     }
-                }
+            }
             arc = {
                 let Some(ref arc_node) = arc.lock().await.next else {
                     break;
@@ -628,7 +635,7 @@ async fn persist(
     //
     lru: Arc<tokio::sync::Mutex<lru::LRUcache>>,
     mut bat_w_req: Vec<WriteRequest>,
-    child_ty: &types::NodeType,
+    add_rvs_edge: bool,
     //
     target_uid: Uuid,
     reverse_sk: String,
@@ -732,7 +739,7 @@ async fn persist(
                 //println!("save_item...{}",bat_w_req.len());
                 bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
-                if !child_ty.is_reference() {
+                if add_rvs_edge {
 
                     for (id, child) in children.into_iter().enumerate() {
                         let rkey = RKey::new(child.clone(), reverse_sk.clone());
@@ -849,7 +856,7 @@ async fn persist(
                         bat_w_req =
                             save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
-                        if !child_ty.is_reference() {
+                        if add_rvs_edge{
                             for (id, child) in children.into_iter().enumerate() {
 
                                 let rkey = RKey::new(child.clone(), reverse_sk.clone());
@@ -957,7 +964,7 @@ async fn persist(
                         bat_w_req =
                             save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
-                        if !child_ty.is_reference() {
+                        if add_rvs_edge {
                             for (id, child) in children.into_iter().enumerate() {
                                 // below design makes use of Mutexes to serialise access to cache
                                 // alternatively, manage addition of reverse edges via a "service" or separate load process.
@@ -1036,7 +1043,7 @@ static LOAD_PROJ: LazyLock<String> = LazyLock::new(|| {
 });
 
 // returns node type as String, moving ownership from AttributeValue - preventing further allocation.
-async fn fetch_edge_ty_nd<'a, T: Into<String>>(
+async fn fetch_p_edge_meta<'a, T: Into<String>>(
     dyn_client: &DynamoClient,
     uid: &Uuid,
     sk: &str,
@@ -1061,7 +1068,7 @@ async fn fetch_edge_ty_nd<'a, T: Into<String>>(
             err
         )
     }
-    let di: types::DataItem = match result.unwrap().item {
+    let mut di: types::DataItem = match result.unwrap().item {
         None => panic!(
             "No type item found in fetch_node_type() for [{}] [{}]",
             uid, sk
@@ -1096,7 +1103,9 @@ async fn fetch_edge_ty_nd<'a, T: Into<String>>(
         );
     }
 
-    let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();
+    //let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();//TODO:consider split_off + mem::swap
+    let mut ovb_pk: Vec<Uuid> = di.nd.as_mut().expect("nd is None").split_off(ovb_start_idx);
+    mem::swap(&mut ovb_pk,  &mut di.nd.unwrap());
 
     (node_types.get(&di.ty.expect("ty is None")), ovb_pk)
 }

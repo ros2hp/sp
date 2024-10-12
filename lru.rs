@@ -56,7 +56,7 @@ impl LRU for MutexGuard<'_, LRUcache> {
         node: &Arc<tokio::sync::Mutex<RNode>>,
         node_guard: &mut MutexGuard<'_, RNode>,
     ) {
-        // abort if node at head of lru, as subsequent attach will only add it back.
+        // abort if node is at head of lru
         match self.head {
             None => {
                 println!("LRU empty - about to populate");
@@ -68,7 +68,7 @@ impl LRU for MutexGuard<'_, LRUcache> {
                 }
             }
         }
-        // detach node from LRU
+        // detach node from LRU chain before attaching at head
         match node_guard.next {
             None => {
                 // must be tail of lru
@@ -126,11 +126,13 @@ impl LRU for MutexGuard<'_, LRUcache> {
         arc_node: &Arc<tokio::sync::Mutex<RNode>>,
         node_guard: &mut tokio::sync::MutexGuard<'_, RNode>,
     ) {
+
         let mut evict_last = false;
         {
             // consider relocating evict to a dedicated service - e.g. executed every 3 seconds.
             let cache_guard = self.cache.lock().await;
             // evict tail node if lRU at 90% capacity
+            println!("LRU::attach size {} of 20",cache_guard.0.len());
             evict_last = cache_guard.0.len() > self.capacity;
         }
         if evict_last {

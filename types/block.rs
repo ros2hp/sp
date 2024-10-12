@@ -469,6 +469,7 @@ pub struct AttrItem {
     pub ix: Option<String>, // supported indexes: FT=Full Text (S type only), "x" combined with Ty will index in GSI Ty_Ix
                             //	pub incp: Vec<String>, // (optional). List of attributes to be propagated. If empty all scalars will be propagated.
                             //	cardinality string   // 1:N , 1:1
+    pub rvsEdge: Option<bool>,
 }
 
 impl AttrItem {
@@ -485,6 +486,7 @@ impl AttrItem {
             //          cd : None,
             //          sz : None,
             ix: None,
+            rvsEdge: None,
         }
     }
 }
@@ -511,6 +513,7 @@ impl From<HashMap<String, AttributeValue>> for AttrItem {
                 "Ix" => item.ix = as_string(v),
                 "IncP" => println!("IncP not used..."),
                 COMMENT => {}
+                "RvsEdge" => item.rvsEdge = as_bool(v),
                 &_ => panic!("unexpected attribute name in AttrItem From impl [{}]", k),
             }
         }
@@ -535,6 +538,7 @@ pub struct AttrD {
     //	pub incp : Vec<String>,
     pub ix: String, // index type
     pub card: String,
+    pub rvsEdge: bool,   // sp load will populate a reverse edge on child node (defined on edge attribute of parent node)
 }
 
 impl AttrD {
@@ -550,6 +554,7 @@ impl AttrD {
             //	pub incp : Vec<String>,
             ix: String::new(),
             card: String::new(),
+            rvsEdge: false,
         }
     }
 }
