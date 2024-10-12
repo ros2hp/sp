@@ -63,14 +63,9 @@ impl RKey {
                 drop(cache_guard);
                 drop(lru_guard);
                 // populate node data from db
-                let rnode: RNode = node_guard
+                node_guard
                     .load_from_db(dyn_client, table_name, &self)
                     .await;
-
-                if rnode.node.is_nil() {
-                    println!("no key found in database: [{:?}]", self);
-                    return;
-                }
 
                 node_guard.add_reverse_edge(
                     target.clone(),

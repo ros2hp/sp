@@ -88,7 +88,7 @@ impl RNode {
         dyn_client: &DynamoClient,
         table_name: &str,
         rkey: &RKey,
-    ) -> Self {
+    ) {
         let result = dyn_client
             .get_item()
             .table_name(table_name)
@@ -111,9 +111,18 @@ impl RNode {
             None => RNode::new(),
             Some(v) => v.into(),
         };
-        ri.state = NodeState::Available;
-
-        ri
+        self.state = NodeState::Available;
+        // update self with db data
+        self.init_cnt = ri.init_cnt;
+        self.target_uid = ri.target_uid;
+        self.target_bid = ri.target_bid;
+        self.target_id = ri.target_id;
+        self.ovb = ri.ovb;   
+        self.obid = ri.obid; 
+        self.obcnt = ri.obcnt; 
+        self.oblen = ri.oblen; 
+        self.oid = ri.oid;
+        self.ocur = ri.ocur;
     }
 
     // fn update(&mut self, e : Self) {
