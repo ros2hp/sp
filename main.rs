@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::env;
 use std::mem;
 use std::string::String;
-use std::sync::LazyLock;
+//use std::sync::LazyLock;
 use std::sync::{Arc, Weak};
 
 use node::RNode;
@@ -1038,9 +1038,9 @@ impl ReverseCache {
 }
 
 //static LOAD_PROJ : LazyLock<String> = LazyLock::new(||types::OVB_s ) + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR;
-static LOAD_PROJ: LazyLock<String> = LazyLock::new(|| {
-    types::OVB.to_string() + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR
-});
+// static LOAD_PROJ: LazyLock<String> = LazyLock::new(|| {
+//     types::OVB.to_string() + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR
+// });
 
 // returns node type as String, moving ownership from AttributeValue - preventing further allocation.
 async fn fetch_p_edge_meta<'a, T: Into<String>>(

@@ -89,6 +89,7 @@ impl RNode {
         table_name: &str,
         rkey: &RKey,
     ) {
+        let projection =  types::OVB.to_string() + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR;
         let result = dyn_client
             .get_item()
             .table_name(table_name)
@@ -97,7 +98,8 @@ impl RNode {
                 AttributeValue::B(Blob::new(rkey.0.clone().as_bytes())),
             )
             .key(types::SK, AttributeValue::S(rkey.1.clone()))
-            .projection_expression((&*LOAD_PROJ).clone())
+            //.projection_expression((&*LOAD_PROJ).clone())
+            .projection_expression(projection)
             .send()
             .await;
 
