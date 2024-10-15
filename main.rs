@@ -210,12 +210,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         table_name,
     );
 
-    // start LRU Evict service
-    println!("start evict service...");
-    // evict service channels
+    // start evict service
+    // setup evict channels
     //  * queue Rkey for eviction
     let (evict_submit_ch_p, evict_submit_rx) =
-        tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(MAX_SP_TASKS * 5);
+        tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(10);//MAX_SP_TASKS * 5);
     //  * query evict service e.g. is node in evict queue?
     let (evict_query_ch_p, evict_query_rx) =
         tokio::sync::mpsc::channel::<QueryMsg>(MAX_SP_TASKS * 2);
@@ -303,16 +302,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let (retry_send_ch, retry_rx) =
         tokio::sync::mpsc::channel::<Vec<aws_sdk_dynamodb::types::WriteRequest>>(MAX_SP_TASKS);
     // reverse cache - contains child nodes across all puid's for all puid edges
-    //let global_reverse_cache = Arc::new(std::sync::Mutex::new(ReverseCache::new()));
-    let global_lru = lru::LRUcache::new(20, evict_submit_ch_p.clone()); //let global_reverse_cache = ReverseCache::new();
+    let global_lru = lru::LRUcache::new(20, evict_submit_ch_p.clone()); 
     // ===============================================================================
     // 9. process each parent_node and its associated edges (child nodes) in parallel
     // ===============================================================================
     for puid in parent_node {
-        if puid.to_string() != "5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
-            continue
-        }
-        println!("Found movie.................==============================================");
+        // if puid.to_string() = "5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" || puid.to_string() = { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
+        //     continue
+        // }
 
         println!("puid  [{}]", puid.to_string());
         // ------------------------------------------
@@ -347,7 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 let mut ovb_pk: HashMap<String, Vec<Uuid>> = HashMap::new();
                 let mut items: HashMap<SortK, Operation> = HashMap::new();
 
-                println!("edge {}  children: {}", p_sk_edge, children.len());
+                //println!("edge {}  children: {}", p_sk_edge, children.len());
                 // =====================================================================
                 // p_node_ty : find type of puid . use sk "m|T#"  <graph>|<T,partition># //TODO : type short name should be in mysql table - saves fetching here.
                 // =====================================================================
@@ -360,6 +357,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     table_name,
                 )
                 .await;
+                if p_node_ty.short_nm() != "Fm" {
+                    return
+                }
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
@@ -601,6 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
 
                 let mut node_guard = arc.lock().await;
 
+                println!("************* shtudown evict rkey {:?} {}",node_guard.node.clone(), node_guard.rvs_sk.clone());
                 if let Err(err) = evict_submit_ch_p 
                     .send((
                         RKey::new(node_guard.node.clone(), node_guard.rvs_sk.clone()),
@@ -651,6 +652,7 @@ async fn persist(
     // evict_recv_ch: receiver - used by this routine to receive respone from eviction service
     let (evict_client_send_ch, mut evict_srv_resp_ch) = tokio::sync::mpsc::channel::<bool>(1);
 
+    println!("PERSIST........add_rvs_edge = {} reverse_sk [{}]",add_rvs_edge,reverse_sk);
     // persist to database
     for (sk, v) in items {
         match v {
@@ -1007,35 +1009,7 @@ async fn persist(
 }
 
 
-// =======================
-//  Reverse Cache
-// =======================
-// cache responsibility is to synchronise access to db across multiple Tokio tasks on a single cache entry.
-// The state of the node edge will determine the type of update required, either embedded or OvB.
-// Each cache update will be saved to db to keep both in sync.
-// All mutations of the cache hashmap need to be serialized.
-struct ReverseCache(HashMap<RKey, Arc<tokio::sync::Mutex<RNode>>>);
 
-impl ReverseCache {
-    fn new() -> Arc<Mutex<ReverseCache>> {
-        Arc::new(Mutex::new(ReverseCache(HashMap::new())))
-    }
-
-    fn get(&mut self, rkey: &RKey) -> Option<Arc<tokio::sync::Mutex<RNode>>> {
-        //self.0.get(rkey).and_then(|v| Some(Arc::clone(v)))
-        match self.0.get(rkey) {
-            None => None,
-            Some(re) => Some(Arc::clone(re)),
-        }
-    }
-
-    fn insert(&mut self, rkey: RKey, rnode: RNode) -> Arc<tokio::sync::Mutex<RNode>> {
-        let arcnode = Arc::new(tokio::sync::Mutex::new(rnode));
-        let y = arcnode.clone();
-        self.0.insert(rkey, arcnode);
-        y
-    }
-}
 
 //static LOAD_PROJ : LazyLock<String> = LazyLock::new(||types::OVB_s ) + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR;
 // static LOAD_PROJ: LazyLock<String> = LazyLock::new(|| {

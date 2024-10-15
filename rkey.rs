@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::lru;
+
 // Reverse_SK is the SK value for the Child of form R#<parent-node-type>#:<parent-edge-attribute-sn>
 type ReverseSK = String;
 
@@ -23,21 +25,21 @@ impl RKey {
                             ,id : usize
     ) {
     
+        println!("rkey add_reverse_edge  rkey={:?}",self);
+    
         let mut lru_guard = lru.lock().await;
         let mut cache_guard = lru_guard.cache.lock().await;
 
     
         match cache_guard.0.get(self) {
+        
             None => {
-                // release locks before communicating with evict service.
+                // rkey not in cache - release locks before communicating with evict service.
                 drop(cache_guard);
                 drop(lru_guard);
                 // not cached ... check if node currently queued in eviction service.
                 if let Err(e) = evict_query_ch
-                    .send(QueryMsg::new(
-                        self.clone(),
-                        evict_client_send_ch.clone(),
-                    ))
+                    .send(QueryMsg::new(self.clone(), evict_client_send_ch.clone()))
                     .await
                 {
                     panic!("evict channel comm failed = {}", e);
@@ -52,29 +54,31 @@ impl RKey {
                     // wait while node is evicted...
                     evict_srv_resp_ch.recv().await;
                 }
-                // acqure locks
-                lru_guard = lru.lock().await;
-                cache_guard = lru_guard.cache.lock().await;
-                // create node and insert into cache but not lru yet.
                 let node = RNode::new_with_key(&self);
+                // acqure locks and add node to cache
+                lru_guard = lru.lock().await;
+                let mut cache_guard = lru_guard.cache.lock().await;
+
+                // create node and populate from db
+                let node = RNode::new_with_key(self);
                 let arc_node = cache_guard.insert(self.clone(), node);
-                // acquire lock on node
-                let mut node_guard = arc_node.lock().await;
                 drop(cache_guard);
+                //
+                let mut node_guard = arc_node.lock().await;
+                // add node to LRU head
+                let lru_len = lru_guard.attach(&arc_node, &mut node_guard).await;
                 drop(lru_guard);
                 // populate node data from db
-                node_guard
-                    .load_from_db(dyn_client, table_name, &self)
-                    .await;
+                node_guard.load_from_db(dyn_client, table_name, self).await;
 
-                node_guard.add_reverse_edge(
-                    target.clone(),
-                    bid as u32,
-                    id as u32,
-                );
+                node_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
+
+                println!("^^^ node_guard.target_uid.len() {}", node_guard.target_uid.len());
             }
-
+            
             Some(cache_node_) => {
+            
+                println!(">>> found in cache {:?}",self);
                 // clone so scope of cache_guard borrow ends here.
                 let cache_node = cache_node_.clone();
                 // prevent overlap in nonmutable and mutable references to lru_guard

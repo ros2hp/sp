@@ -6,7 +6,7 @@ pub mod block;
 //pub use block::{ DataItem, NodeBlock};
 pub use block::{
     DataItem, NodeCache, B, BID, BL, CNT, DT, GRAPH, ISNODE, IX, LB, LBL, LN, LS, N, ND, OP, OVB,
-    OVB_BID, OVB_CNT, OVB_CUR, OVB_ID, P, PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF,
+    OVB_BID, OVB_CUR, OVB_ID, P, PARENT, PK, S, SB, SK, SK_, SN, SS, TUID, TY, XF, TARGET_UID, TARGET_ID, TARGET_BID,
 };
 
 use std::collections::{HashMap, HashSet};

@@ -110,15 +110,13 @@ impl RNode {
             )
         }
         let mut ri: RNode = match result.unwrap().item {
-            None => RNode::new(),
+            None =>  return,
             Some(v) => v.into(),
         };
         self.state = NodeState::Available;
         // update self with db data
         self.init_cnt = ri.init_cnt;
-        self.target_uid = ri.target_uid;
-        self.target_bid = ri.target_bid;
-        self.target_id = ri.target_id;
+        //
         self.ovb = ri.ovb;   
         self.obid = ri.obid; 
         self.obcnt = ri.obcnt; 
@@ -126,16 +124,6 @@ impl RNode {
         self.oid = ri.oid;
         self.ocur = ri.ocur;
     }
-
-    // fn update(&mut self, e : Self) {
-    //     self.node = e.node;
-    //     self.rvs_sk = e.rvs_sk;
-    //     //
-    //     self.cnt = e.cnt;
-    //     self.ovb = e.ovb;
-    //     self.obid = e.obid;
-    //     self.ocur = e.ocur;
-    // }
 
     pub fn add_reverse_edge(&mut self, target_uid: Uuid, target_bid: u32, target_id: u32) {
         //self.cnt += 1; // redundant, use container_uuid.len() and add it to db cnt attribute.
@@ -176,7 +164,7 @@ impl From<HashMap<String, AttributeValue>> for RNode {
                 types::CNT => edge.init_cnt = types::as_u32_2(v).unwrap(),
                 //
                 types::OVB => edge.ovb = types::as_luuid(v).unwrap(),
-                types::OVB_CNT => edge.obcnt = types::as_lu32(v).unwrap(),
+                //types::OVB_CNT => edge.obcnt = types::as_lu32(v).unwrap(),
                 types::OVB_BID => edge.obid = types::as_lu32(v).unwrap(),
                 types::OVB_ID => edge.oid = types::as_lu32(v).unwrap(),
                 types::OVB_CUR => edge.ocur = types::as_u8_2(v),

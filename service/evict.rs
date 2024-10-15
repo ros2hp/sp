@@ -55,7 +55,7 @@ pub fn start_service(
 
     //let mut start = Instant::now();
 
-    println!("start evict service: table [{}] ", table_name);
+    println!("starting evict service: table [{}] ", table_name);
 
     let mut pending = Pending::new();
     let mut query_client = QueryClient::new();
@@ -218,10 +218,10 @@ async fn persist_rnode(
 
         if init_cnt == 0 {
             // no data in db
-            update_expression = "SET #target = :tuid, #bid = :bid, #id = id, #cnt = :cnt, #db_sourced : :db_sourced";
+            update_expression = "SET #target = :tuid, #id = id, #cnt = :cnt";
         } else {
             // append to existing data
-            update_expression = "SET #target=LIST_APPEND(#target, :tuid), #bid=LIST_APPEND(#bid,:bid), #id=LIST_APPEND(#id,:id), #cnt = #cnt+:cnt";
+            update_expression = "SET #target=LIST_APPEND(#target, :tuid), #id=LIST_APPEND(#id,:id), #cnt = #cnt+:cnt";
         }
         // update edge item
         let result = dyn_client
@@ -233,12 +233,10 @@ async fn persist_rnode(
             // reverse edge
             .expression_attribute_names("#cnt", types::CNT)
             .expression_attribute_values(":cnt", AttributeValue::N(edge_cnt.to_string()))
-            .expression_attribute_names("#target", types::OVB)
+            .expression_attribute_names("#target", types::TARGET_UID)
             .expression_attribute_values(":tuid", AttributeValue::L(target_uid))
-            .expression_attribute_names("#bid", types::OVB_BID)
-            .expression_attribute_values(":bid", AttributeValue::L(target_bid))
-            .expression_attribute_names("#id", types::OVB_ID)
-            .expression_attribute_values(":id", AttributeValue::L(target_id))
+            .expression_attribute_names("#bid", types::TARGET_ID)
+            .expression_attribute_values(":bid", AttributeValue::L(target_id))
             //.return_values(ReturnValue::AllNew)
             .send()
             .await;

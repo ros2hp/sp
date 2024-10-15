@@ -61,9 +61,13 @@ pub const COMMENT: &str = "Comment";
 pub const TYIX: &str = "TyIx";
 
 // Reverse edge
-//pub const OVB : &str = "OVB";           // List of UUIDs for OvBs
+//pub const CNT: &str = "Cnt";
+pub const TARGET_UID: &str = "Target_uid";
+pub const TARGET_BID: &str = "Target_bid";
+pub const TARGET_ID: &str = "Target_id";
+// Reverse edge Overflow metadata - stored with child reverse edge only when OvB used
+//pub const OVB : &str = "OVB";     // List of UUIDs for OvBs
 pub const OVB_BID: &str = "OBID"; // List of current Batch ID in each OvB
-pub const OVB_CNT: &str = "OBCNT";
 pub const OVB_ID: &str = "OID"; // List of current index for each Batch
 pub const OVB_CUR: &str = "OCUR";
 
