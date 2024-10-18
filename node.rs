@@ -35,10 +35,6 @@ pub struct RNode {
     pub ocur: Option<u8>, // current Ovb in use
     //
     //
-    //update_expression: String,
-    // on_evict : Option<Box<dyn Fn()>>,
-    pub next: Option<Arc<tokio::sync::Mutex<RNode>>>,
-    pub prev: Option<Weak<tokio::sync::Mutex<RNode>>>,
 }
 
 impl RNode {
@@ -58,8 +54,6 @@ impl RNode {
             obcnt: vec![],
             oid: vec![],
             ocur: None, //
-            next: None,
-            prev: None,
         }
     }
 
@@ -78,8 +72,6 @@ impl RNode {
             obid: vec![],
             oid: vec![],
             ocur: None, //
-            next: None,
-            prev: None,
         }
     }
 
@@ -109,7 +101,7 @@ impl RNode {
                 err
             )
         }
-        let mut ri: RNode = match result.unwrap().item {
+        let ri: RNode = match result.unwrap().item {
             None =>  return,
             Some(v) => v.into(),
         };
@@ -135,14 +127,6 @@ impl RNode {
         self.target_id
             .push(AttributeValue::N(target_id.to_string()));
         
-    }
-
-    pub fn set_prev(&mut self, v: Weak<tokio::sync::Mutex<RNode>>) {
-        self.prev = Some(v)
-    }
-
-    pub fn set_next(&mut self, v: Arc<tokio::sync::Mutex<RNode>>) {
-        self.next = Some(v)
     }
 
     //

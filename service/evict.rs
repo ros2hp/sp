@@ -1,4 +1,5 @@
 use crate::types;
+use crate::cache::ReverseCache;
 
 use crate::node::RNode;
 use crate::{QueryMsg, RKey};
@@ -45,9 +46,10 @@ pub fn start_service(
     dynamo_client: DynamoClient,
     table_name_: impl Into<String>,
     // channels
-    mut evict_submit_rx: tokio::sync::mpsc::Receiver<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
+    mut evict_submit_rx: tokio::sync::mpsc::Receiver<RKey>,
     mut client_query_rx: tokio::sync::mpsc::Receiver<QueryMsg>,
     mut shutdown_ch: tokio::sync::broadcast::Receiver<u8>,
+    mut cache: Arc<tokio::sync::Mutex<ReverseCache>>,
 ) -> task::JoinHandle<()> {
     println!("evict service...started.");
 
@@ -73,14 +75,22 @@ pub fn start_service(
         loop {
             //let evict_complete_send_ch_=evict_completed_send_ch.clone();
             tokio::select! {
-                //biased;         // removes random number generation - normal processing will determine order so select! can follow it.
+                biased;         // removes random number generation - normal processing will determine order so select! can follow it.
                 // note: recv() is cancellable, meaning select! can cancel a recv() without loosing data in the channel.
                 // select! will be forced to cancel recv() if another branch event happens e.g. recv() on shutdown_channel.
-                Some((rkey, arc_node)) = evict_submit_rx.recv() => {
+                Some(rkey) = evict_submit_rx.recv() => {
+
+                    let arc_node: Arc<tokio::sync::Mutex<RNode>>;
+                    {
+                        let cache_guard = cache.lock().await;
+                        arc_node = cache_guard.0.get(&rkey).unwrap().clone();
+                    }
 
                     pending.0.insert(rkey.clone());
 
                     tasks += 1;
+                    
+                    println!("Evict Service: submit event for {:?} tasks [{}]",rkey, tasks);
 
                     if tasks >= MAX_EVICT_TASKS {
 
@@ -122,6 +132,8 @@ pub fn start_service(
                 Some(evict_rkey) = evict_completed_rx.recv() => {
 
                     tasks-=1;
+                    
+                    println!("Event SErvice: completed msg: tasks {}",tasks);
                     pending.0.remove(&evict_rkey);
                     // send to client if one is waiting on query channel
                     if let Some(client_ch) = query_client.0.get(&evict_rkey) {
@@ -148,8 +160,8 @@ pub fn start_service(
                     };
                 },
 
-                _ = shutdown_ch.recv() => {
-                        println!("Shutdown of evict service started. Waiting for remaining evict tasks to complete...");
+                _ = shutdown_ch.recv(), if tasks == 0 => {
+                        println!("Shutdown of evict service started. Waiting for remaining evict tasks [{}]to complete...",tasks);
                         while tasks > 0 {
                             println!("...waiting on {} tasks",tasks);
                             let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};
@@ -192,13 +204,14 @@ async fn persist_rnode(
     let mut update_expression: &str;
     let edge_cnt = node.target_uid.len();
     let init_cnt = node.init_cnt as usize;
+    
+    println!("Evict Service: Persist....init_cnt {}",init_cnt);
 
     if init_cnt <= crate::EMBEDDED_CHILD_NODES  {
 
         if node.target_uid.len() <= crate::EMBEDDED_CHILD_NODES - init_cnt {
             // consume all of node.target*
             target_uid = mem::take(&mut node.target_uid);
-            target_bid = mem::take(&mut node.target_bid);
             target_id = mem::take(&mut node.target_id);
         } else {
             // consume portion of node.target*
@@ -206,10 +219,6 @@ async fn persist_rnode(
                 .target_uid
                 .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
             std::mem::swap(&mut target_uid, &mut node.target_uid);
-            target_bid = node
-                .target_bid
-                .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
-            std::mem::swap(&mut target_bid, &mut node.target_bid);
             target_id = node
                 .target_id
                 .split_off(crate::EMBEDDED_CHILD_NODES - init_cnt);
@@ -218,16 +227,18 @@ async fn persist_rnode(
 
         if init_cnt == 0 {
             // no data in db
-            update_expression = "SET #target = :tuid, #id = id, #cnt = :cnt";
+            //update_expression = "SET #target = :tuid, #bid = :bid, #id = :id, #cnt = :cnt";
+            update_expression = "SET #cnt = :cnt, #target = :tuid,  #id = :id";
         } else {
             // append to existing data
             update_expression = "SET #target=LIST_APPEND(#target, :tuid), #id=LIST_APPEND(#id,:id), #cnt = #cnt+:cnt";
         }
+
         // update edge item
         let result = dyn_client
             .update_item()
             .table_name(table_name.clone())
-            .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone())))
+            .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone().as_bytes())))
             .key(types::SK, AttributeValue::S(rkey.1.clone()))
             .update_expression(update_expression)
             // reverse edge
@@ -235,8 +246,8 @@ async fn persist_rnode(
             .expression_attribute_values(":cnt", AttributeValue::N(edge_cnt.to_string()))
             .expression_attribute_names("#target", types::TARGET_UID)
             .expression_attribute_values(":tuid", AttributeValue::L(target_uid))
-            .expression_attribute_names("#bid", types::TARGET_ID)
-            .expression_attribute_values(":bid", AttributeValue::L(target_id))
+            .expression_attribute_names("#id", types::TARGET_ID)
+            .expression_attribute_values(":id", AttributeValue::L(target_id))
             //.return_values(ReturnValue::AllNew)
             .send()
             .await;
@@ -244,8 +255,10 @@ async fn persist_rnode(
         handle_result(result);
 
     }
+
     // consume the target_* fields by moving them into overflow batches and persisting the batch
     while node.target_uid.len() > 0 {
+       
         let mut target_uid: Vec<AttributeValue> = vec![];
         let mut target_bid: Vec<AttributeValue> = vec![];
         let mut target_id: Vec<AttributeValue> = vec![];
@@ -267,13 +280,14 @@ async fn persist_rnode(
                     {
                         target_uid = mem::take(&mut node.target_uid);
                         target_bid = mem::take(&mut node.target_bid);
+                        target_id = mem::take(&mut node.target_id);
                     } else {
-                        target_uid = node
-                            .target_uid
-                            .split_off(crate::OV_MAX_BATCH_SIZE as usize - oblen as usize);
+                        target_uid = node.target_uid.split_off(crate::OV_MAX_BATCH_SIZE as usize - oblen as usize);
                         std::mem::swap(&mut target_uid, &mut node.target_uid);
                         target_bid = node.target_bid.split_off(crate::OV_MAX_BATCH_SIZE);
                         std::mem::swap(&mut target_bid, &mut node.target_bid);
+                        target_id = node.target_id.split_off(crate::OV_MAX_BATCH_SIZE);
+                        std::mem::swap(&mut target_id, &mut node.target_id);
                     }
                 } else {
                     // create or select an OvB
@@ -321,20 +335,20 @@ async fn persist_rnode(
                 sk_w_bid.push('%');
                 sk_w_bid.push_str(&node.obid[ocur as usize].to_string());
 
-                update_expression = "SET #target = :tuid, #bid = :bid, #id = id";
+                update_expression = "SET #target = :tuid, #bid=:bid, #id = id";
 
                 let result = dyn_client
                     .update_item()
                     .table_name(table_name.clone())
-                    .key(types::PK, AttributeValue::B(Blob::new(rkey.0.clone())))
-                    .key(types::SK, AttributeValue::S(rkey.1.clone()))
+                    .key(types::PK, AttributeValue::B(Blob::new(node.ovb[node.ocur.unwrap() as usize].as_bytes())))
+                    .key(types::SK, AttributeValue::S(sk_w_bid.clone()))
                     .update_expression(update_expression)
                     // reverse edge
-                    .expression_attribute_names("#target", types::OVB)
+                    .expression_attribute_names("#target", types::TARGET_UID)
                     .expression_attribute_values(":tuid", AttributeValue::L(target_uid))
-                    .expression_attribute_names("#bid", types::OVB_BID)
+                    .expression_attribute_names("#id", types::TARGET_BID)
                     .expression_attribute_values(":bid", AttributeValue::L(target_bid))
-                    .expression_attribute_names("#id", types::OVB_ID)
+                    .expression_attribute_names("#id", types::TARGET_ID)
                     .expression_attribute_values(":id", AttributeValue::L(target_id))
                     //.return_values(ReturnValue::AllNew)
                     .send()
@@ -348,6 +362,10 @@ async fn persist_rnode(
     if node.ovb.len() > 0 {
         update_expression = "SET #cnt = :cnt, #ovb = :ovb, #obid = :obid, #ocur = :ocur";
         let cnt = node.ovb.len() + init_cnt as usize;
+        let ocur = match node.ocur {
+            None => 0,
+            Some(v) => v,
+        };
         let result = dyn_client
             .update_item()
             .table_name(table_name.clone())
@@ -359,10 +377,10 @@ async fn persist_rnode(
             .expression_attribute_values(":cnt", AttributeValue::N(cnt.to_string()))
             .expression_attribute_names("#ovb", types::OVB)
             .expression_attribute_values(":ovb", types::uuid_to_av_lb(&node.ovb))
-            .expression_attribute_names("#ovb", types::OVB_BID)
-            .expression_attribute_values(":ovb", types::u32_to_av_ln(&node.obid))
-            .expression_attribute_names("#ovb", types::OVB_CUR)
-            .expression_attribute_values(":ovb", AttributeValue::N(node.ocur.unwrap().to_string()))
+            .expression_attribute_names("#obid", types::OVB_BID)
+            .expression_attribute_values(":obid", types::u32_to_av_ln(&node.obid))
+            .expression_attribute_names("#ocur", types::OVB_CUR)
+            .expression_attribute_values(":ocur", AttributeValue::N(ocur.to_string()))
             //.return_values(ReturnValue::AllNew)
             .send()
             .await;
@@ -381,14 +399,14 @@ async fn persist_rnode(
 fn  handle_result(result: Result<UpdateItemOutput, SdkError<UpdateItemError, HttpResponse>> ) {
     
     match result {
-        Ok(_out) => {}
+        Ok(_out) => { println!(" Evict Service: Persist successful update...")}
         Err(err) => {
             match err {
-                SdkError::ConstructionFailure(_cf) => {},
-                SdkError::TimeoutError(_te) => {},
-                SdkError::DispatchFailure(_df) => {},
-                SdkError::ResponseError(_re) => {},
-                SdkError::ServiceError(_se) => {},
+                SdkError::ConstructionFailure(_cf) => { println!(" Evict Service: Persist  update error ConstructionFailure...")},
+                SdkError::TimeoutError(_te) => { println!(" Evict Service: Persist  update.error TimeoutError")},
+                SdkError::DispatchFailure(_df) => { println!(" Evict Service: Persist  update error...DispatchFailure")},
+                SdkError::ResponseError(_re) => { println!(" Evict Service: Persist  update. error ResponseError")},
+                SdkError::ServiceError(_se) => { println!(" Evict Service: Persist  update. error ServiceError")},
                 _ => {},
             }
         }

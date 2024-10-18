@@ -1,280 +1,176 @@
-use crate::node::NodeState;
-use crate::node::RNode;
-use std::sync::{Arc, Weak};
-#[allow(unused_imports)]
-use tokio::sync::MutexGuard;
 
+use crate::rkey::RKey;
+use crate::node::RNode;
+use crate::cache::ReverseCache;
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Weak};
+
+use tokio::sync::Mutex;
+
+
+// lru is used only to drive lru_entry eviction.
+// the lru_entry cache is separate
+#[derive(Clone)]
+pub struct Entry{
+    pub key: RKey,
+    //
+    pub next: Option<Arc<Mutex<Entry>>>,
+    pub prev: Option<Weak<Mutex<Entry>>>,
+}
 use super::*;
 
-
-// =======================
-//  Reverse Cache
-// =======================
-// cache responsibility is to synchronise access to db across multiple Tokio tasks on a single cache entry.
-// The state of the node edge will determine the type of update required, either embedded or OvB.
-// Each cache update will be saved to db to keep both in sync.
-// All mutations of the cache hashmap need to be serialized.
-pub struct ReverseCache(pub HashMap<RKey, Arc<tokio::sync::Mutex<RNode>>>);
-
-impl ReverseCache {
-    fn new() -> Arc<Mutex<ReverseCache>> {
-        Arc::new(Mutex::new(ReverseCache(HashMap::new())))
-    }
-
-    pub fn get(&mut self, rkey: &RKey) -> Option<Arc<tokio::sync::Mutex<RNode>>> {
-        //self.0.get(rkey).and_then(|v| Some(Arc::clone(v)))
-        match self.0.get(rkey) {
-            None => None,
-            Some(re) => Some(Arc::clone(re)),
+impl Entry {
+    fn new(rkey : RKey) -> Entry {
+        Entry{key: rkey
+            ,next: None
+            ,prev: None
         }
     }
-
-    pub fn insert(&mut self, rkey: RKey, rnode: RNode) -> Arc<tokio::sync::Mutex<RNode>> {
-        let arcnode = Arc::new(tokio::sync::Mutex::new(rnode));
-        let y = arcnode.clone();
-        self.0.insert(rkey, arcnode);
-        y
-    }
 }
-
-
-pub struct LRUcache {
+pub struct LRUevict {
     capacity: usize,
-    pub cache: Arc<tokio::sync::Mutex<ReverseCache>>,
+    cnt : usize,
     //
-    evict_submit_ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
+    lookup : BTreeMap<RKey,Arc<Mutex<Entry>>>,
     //
-    pub head: Option<Arc<tokio::sync::Mutex<RNode>>>, // Option<HashValue> i.e. Option<ptr>
-    tail: Option<Arc<tokio::sync::Mutex<RNode>>>,
+    evict_submit_ch: tokio::sync::mpsc::Sender<RKey>,
+    //
+    pub head: Option<Arc<Mutex<Entry>>>,
+    tail: Option<Arc<Mutex<Entry>>>,
 }
 
-impl LRUcache {
+
+impl LRUevict {
+
     pub fn new(
         cap: usize,
-        ch: tokio::sync::mpsc::Sender<(RKey, Arc<tokio::sync::Mutex<RNode>>)>,
-    ) -> Arc<tokio::sync::Mutex<Self>> {
-        Arc::new(tokio::sync::Mutex::new(LRUcache {
+        ch: tokio::sync::mpsc::Sender<RKey>,
+    ) -> (Arc<tokio::sync::Mutex<Self>>, Arc<Mutex<ReverseCache>>) {
+        (
+        Arc::new(tokio::sync::Mutex::new(LRUevict {
             capacity: cap,
-            cache: ReverseCache::new(), //
-            evict_submit_ch: ch,        //
+            cnt: 0,
+            lookup: BTreeMap::new(),
+            evict_submit_ch: ch,
             head: None,
             tail: None,
-        }))
+        })),
+        ReverseCache::new()
+        )
     }
 }
 
 // implement attach & move_to_head as trait methods.
-// Makes more sense however for these methods to be part of the LRUcache itself - just epxeriementing with traits.
-pub trait LRU {
-    async fn attach(
-        &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
-        arc_node: &Arc<tokio::sync::Mutex<RNode>>,
-        node_guard: &mut tokio::sync::MutexGuard<'_, RNode>,
-    );
+// // Makes more sense however for these methods to be part of the LRUevict itself - just epxeriementing with traits.
+// pub trait LRU {
+//     fn attach(
+//         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
+//         rkey: RKey,
+//     );
 
-    //pub async fn detach(&mut self
-    async fn move_to_head(
-        &mut self,
-        node: &Arc<tokio::sync::Mutex<RNode>>,
-        node_guard: &mut MutexGuard<'_, RNode>,
-    );
-}
+//     //pub async fn detach(&mut self
+//     fn move_to_head(
+//         &mut self,
+//         rkey: RKey,
+//     );
+// }
 
-impl LRU for MutexGuard<'_, LRUcache> {
+impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
     
-    // prerequisite - node has been confirmed to be in lru-cache.
-    async fn move_to_head(
+    // prerequisite - lru_entry has been confirmed to be in lru-cache.
+    pub async fn move_to_head(
         &mut self,
-        node: &Arc<tokio::sync::Mutex<RNode>>,
-        node_guard: &mut MutexGuard<'_, RNode>,
-    ) {
-    
-        match node_guard.prev {
-          None => {println!(">> move_to_head: {} prev is None",node_guard.node.to_string());}
-          _ => {println!(">> move_to_head: {} prev is Some",node_guard.node.to_string());}
-        }
-        match node_guard.next {
-            None => {println!(">> move_to_head: {} next is None",node_guard.node.to_string());}
-            _ =>  {println!(">> move_to_head: {} next is Some",node_guard.node.to_string());}
-        }
-    
-        // abort if node is at head of lru
+        rkey: RKey,
+    ) {  
+        // abort if lru_entry is at head of lru
         match self.head {
             None => {
-                println!("LRU empty - about to add node");
+                println!("LRU empty - about to add lru_entry");
             }
             Some(ref v) => {
-                let head = v.lock().await;
-            
-                println!(">> move_to_head: lru head is {} current node {} ", head.node.to_string(), node_guard.node.to_string());
-                if Arc::as_ptr(v) == Arc::as_ptr(node) {
-                    // node already at head
-                    println!(">> move_to_head: {} already at head of LRU ",node_guard.node.to_string());
-                    return;
-                }
+                if v.lock().await.key == rkey {
+                    // rkey already at head
+                    return
+                }    
             }
         }
-        // detach node from LRU chain before attaching at head
-        match node_guard.next {
-            None => {
-                println!(">> move_to_head: {} at tail of LRU ",node_guard.node.to_string());
-                // must be tail of lru
-                match node_guard.prev.as_ref().unwrap().upgrade() {
-                    None => {
-                        panic!("detach error: cannot upgrade prev")
-                    }
-                    Some(ref prev_) => {
-                        let prev = Arc::clone(prev_);
-                        {
-                            let mut prev_guard = prev.lock().await;
-                            prev_guard.next = None;
-                        } // unlock
-                        self.tail = Some(prev);
-                    }
-                }
-            }
 
-            Some(ref next_) => {
-                // in mid lru
-                println!(">> move_to_head: {} mid LRU ",node_guard.node.to_string());
-                let next = Arc::clone(next_);
-                // lock next node in lru - about to relink it
-                {
-                    let mut next_guard = next.lock().await;
-    
-                    if let Some(ref prev_) = node_guard.prev {
-                        let prev = Weak::clone(prev_);
-                        next_guard.set_prev(prev);
-                    } else {
-                        println!("move_to_head: expected Some got None in prev for {}",node_guard.node.to_string());
-                    }
-                }
-                match node_guard.prev.as_ref().unwrap().upgrade() {
-                    None => {
-                        println!("Detach error: Weak failed to be upgraded...{}",node_guard.node.to_string());
-                    }
-                    Some(v) => {
-                        let mut prev_guard = v.lock().await;
-                        if let Some(ref next_) = node_guard.next {
-                            let next = Arc::clone(next_);
-                            prev_guard.set_next(next);
-                        }
-                    }
-                }
-            }
-        }
-        node_guard.prev = None;
-        //node_guard.set_next(self.head.as_ref().unwrap().clone());
+        let lru_entry=Arc::clone(self.lookup.get_mut(&rkey).as_ref().unwrap());
         {
-            match self.head {
-                None =>  {}
-                Some(ref n) => {
-                    node_guard.set_next(n.clone());
-                    // point current
-                    println!(">> attach: set next nodes prev point to new node....");
-                    let mut head_node = n.lock().await;
-                    head_node.set_prev(Arc::downgrade(node));
-                }
-            }
+            // detach lru_entry from LRU before attaching at head
+            let mut lru_entry_guard = lru_entry.lock().await;
+
+            let prev_ = lru_entry_guard.prev.as_ref().unwrap();
+            let Some(prev_upgrade) =  prev_.upgrade() else {panic!("failed to upgrade weak lru_entry")};
+            let mut prev_guard = prev_upgrade.lock().await;
+
+            let next_ = lru_entry_guard.next.as_ref().unwrap();
+            let mut next_guard= next_.lock().await;
+
+            prev_guard.next = Some(next_.clone());
+            next_guard.prev = Some(Arc::downgrade(&prev_upgrade));
         }
-        // attach node to head of lru
-        println!("move_to_head: set head of LRU to  {}",node_guard.node.to_string());
-        self.head = Some(node.clone());
-        
-        match node_guard.prev {
-          None => {println!(">> move_to_head: completed.  {} prev is None",node_guard.node.to_string());}
-          _ => {println!(">> move_to_head: completed. {} prev is Some",node_guard.node.to_string());}
-        }
-  }
+        let mut lru_entry_guard = lru_entry.lock().await;
+        lru_entry_guard.next = self.head.clone();
+        lru_entry_guard.prev = None;
+
+        self.head = Some(lru_entry.clone());
+
+    }
 
 
 
 
 
-    async fn attach(
+    pub async fn attach(
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
-        arc_node: &Arc<tokio::sync::Mutex<RNode>>,
-        node_guard: &mut tokio::sync::MutexGuard<'_, RNode>,
+        rkey : RKey,
     ) {
-
-        
-        let mut evict_last = false;
-        {
-            // consider relocating evict to a dedicated service - e.g. executed every 3 seconds.
-            let cache_guard = self.cache.lock().await;
-            // evict tail node if lRU at 90% capacity
-            println!("LRU::attach size {} of {} {:?}",cache_guard.0.len(),self.capacity,node_guard.node);
-            evict_last = cache_guard.0.len() > self.capacity;
-        }
-        if evict_last {
+        if self.cnt > self.capacity {
             println!("evict...");
-            // unlink tail node from lru and notify evict service.
-            // Clone RNode as about to purge it from cache.
-            let evict_arc_node = self.tail.as_ref().unwrap().clone();
+            // unlink tail lru_entry from lru and notify evict service.
+            // Clone REntry as about to purge it from cache.
+            let evict_lru_entry = self.tail.as_ref().unwrap().clone();
+
+            let Some(new_tail) = evict_lru_entry.lock().await.prev.as_ref().unwrap().upgrade() else {panic!("Expecte Some")};
+            let mut new_tail_guard = new_tail.lock().await;
+            new_tail_guard.next = None;
+            self.tail = Some(new_tail.clone());
+            self.cnt-=1;
             
-                let mut evict_node = evict_arc_node.lock().await;
-                evict_node.state = NodeState::Evicting;
-                let evict_rkey = super::RKey::new(evict_node.node.clone(), evict_node.rvs_sk.clone());
-                if let None = evict_node.prev {
-                    panic!(">> attach: evicting node {} - last on LRU. Expected Prev to be Some not None.",evict_node.node.to_string());
-                } 
-                let prev = evict_node.prev.as_ref().unwrap().upgrade();
-                match prev {
-                    None => {
-                        println!("attach error: could not upgrade evicted node previous Arc")
-                    }
-                    Some(n) => {
-                        self.tail = Some(n.clone());
-                        let mut tail_node_guard = n.lock().await;
-                        tail_node_guard.next = None;
-                    }
-                }
-    
-                let mut cache_guard = self.cache.lock().await;
-                cache_guard.0.remove(&evict_rkey);
-            
-            // notify evict service to asynchronously save to db
+            // notify evict service to asynchronously save to db before removing from cache
+            let evict_rkey = evict_lru_entry.lock().await.key.clone();
             if let Err(err) = self
                 .evict_submit_ch
-                .send((evict_rkey.clone(), evict_arc_node.clone()))
+                .send(evict_rkey)
                 .await
             {
                 println!("Error sending on Evict channel: [{}]", err);
             }
-        } // unlock cache_guard, evict_node
-        
+        } 
         // attach to head of LRU
-        node_guard.prev = None;
+        let mut new_lru_entry = Entry::new(rkey.clone()); 
+        let e=Arc::new(Mutex::new(new_lru_entry.clone()));
         match self.head {
             None => { 
-                    // empty LRU 
-                    println!("<<< attach: empty LRU set head and tail");
-                    node_guard.next = None;
-                    self.tail = Some(arc_node.clone());
-                    }
-            Some(ref n) => {
-                node_guard.set_next(n.clone());
-                // point current
-                println!(">> attach: set next nodes prev point to new node....");
-                let mut next_node = n.lock().await;
-                next_node.set_prev(Arc::downgrade(arc_node));
+                // empty LRU 
+                println!("<<< attach: empty LRU set head and tail");
+                
+                self.head = Some(e.clone());
+                self.tail = Some(e.clone());
+                }
+            Some(ref e) => {
+                let mut head_guard = e.lock().await;
+                new_lru_entry.next = Some(e.clone());
+                let arc_new_lru_entry = Arc::new(Mutex::new(new_lru_entry));
+                head_guard.prev = Some(Arc::downgrade(&arc_new_lru_entry.clone()));
             }
         }
-        // attach node to head of lru
-        self.head = Some(arc_node.clone());
-       
-       
-       
-       
-        
-        match node_guard.prev {
-          None => {println!(">> attach: {} prev is None",node_guard.node.to_string());}
-          _ => {println!(">> attach: {} prev is Some",node_guard.node.to_string());}
-        }
-        match node_guard.next {
-            None => {println!(">> attach: {} next is None",node_guard.node.to_string());}
-            _ =>  {println!(">> attach : {} next is Some",node_guard.node.to_string());}
-        }
+        self.head=Some(e.clone());
+        self.cnt+=1;
+
+        self.lookup.insert(rkey, e); 
         
     }
 }

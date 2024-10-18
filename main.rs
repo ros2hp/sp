@@ -5,6 +5,7 @@
 mod lru;
 mod node;
 mod rkey;
+mod cache;
 
 mod service;
 mod types;
@@ -14,13 +15,11 @@ use std::env;
 use std::mem;
 use std::string::String;
 //use std::sync::LazyLock;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use node::RNode;
 
 use rkey::RKey;
-
-use lru::LRU;
 
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::builders::PutRequestBuilder;
@@ -209,12 +208,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         retry_shutdown_ch,
         table_name,
     );
-
     // start evict service
     // setup evict channels
     //  * queue Rkey for eviction
-    let (evict_submit_ch_p, evict_submit_rx) =
-        tokio::sync::mpsc::channel::<(RKey, Arc<tokio::sync::Mutex<RNode>>)>(10);//MAX_SP_TASKS * 5);
+    let (evict_submit_ch_p, evict_submit_rx) = tokio::sync::mpsc::channel::<RKey>(MAX_SP_TASKS*2);
     //  * query evict service e.g. is node in evict queue?
     let (evict_query_ch_p, evict_query_rx) =
         tokio::sync::mpsc::channel::<QueryMsg>(MAX_SP_TASKS * 2);
@@ -223,6 +220,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // pending evict
     println!("start evict service...");
     //let (pending_evict_ch_p, pending_evict_rx) = tokio::sync::mpsc::channel::<Pending_Action>(MAX_SP_TASKS * 20);
+ 
+    // ================================================
+    // create eviction LRU and cache for reverse edges
+    // ================================================
+    let (lru_m, cache) = lru::LRUevict::new(20, evict_submit_ch_p.clone()); 
 
     let evict_service = service::evict::start_service(
         dynamo_client.clone(),
@@ -230,7 +232,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         evict_submit_rx,
         evict_query_rx,
         evict_shutdown_ch,
+        cache.clone(),
     );
+
     // ================================
     // 4. Setup a MySQL connection pool
     // ================================
@@ -301,8 +305,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ====================================
     let (retry_send_ch, retry_rx) =
         tokio::sync::mpsc::channel::<Vec<aws_sdk_dynamodb::types::WriteRequest>>(MAX_SP_TASKS);
-    // reverse cache - contains child nodes across all puid's for all puid edges
-    let global_lru = lru::LRUcache::new(20, evict_submit_ch_p.clone()); 
     // ===============================================================================
     // 9. process each parent_node and its associated edges (child nodes) in parallel
     // ===============================================================================
@@ -327,7 +329,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         let retry_ch = retry_send_ch.clone();
         let graph_sn = graph_prefix_wdot.trim_end_matches('.').to_string();
         let node_types = node_types.clone(); // Arc instance - single cache in heap storage
-        let lru: Arc<tokio::sync::Mutex<lru::LRUcache>> = global_lru.clone();
+        let lru: Arc<tokio::sync::Mutex<lru::LRUevict>> = lru_m.clone();
+        let cache= cache.clone();
         let evict_query_ch = evict_query_ch_p.clone();
 
         tasks += 1; // concurrent task counter
@@ -553,6 +556,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     &dyn_client,
                     table_name,
                     lru.clone(),
+                    cache.clone(),
                     bat_w_req,
                     add_rvs_edge,
                     puid,
@@ -593,31 +597,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ==========================================================================
     // Persist all nodes in the LRU cache by submiting them to the Evict service
     // ==========================================================================
-    if let Some(ref arc_) = global_lru.lock().await.head {
-        let mut arc = arc_.clone();
-        // following the linked list of nodes...
-        loop {
-            {
+    let lru_guard = lru_m.lock().await; 
+    let mut entry = lru_guard.head.clone();
+    while let Some(entry_) = entry {
+        
+            let rkey = entry_.lock().await.key.clone();
+            if let Err(err) = evict_submit_ch_p 
+                        .send(rkey)
+                        .await {
+                            panic!("Error on evict_submit_ch channel [{}]",err);
+                        }
 
-                let mut node_guard = arc.lock().await;
-
-                println!("************* shtudown evict rkey {:?} {}",node_guard.node.clone(), node_guard.rvs_sk.clone());
-                if let Err(err) = evict_submit_ch_p 
-                    .send((
-                        RKey::new(node_guard.node.clone(), node_guard.rvs_sk.clone()),
-                        arc.clone(),
-                    ))
-                    .await {
-                        panic!("Error on evict_submit_ch channel [{}]",err);
-                    }
-            }
-            arc = {
-                let Some(ref arc_node) = arc.lock().await.next else {
-                    break;
-                };
-                arc_node.clone()
-            };
-        }
+            entry = entry_.lock().await.next.clone();      
     }
     // ==============================
     // Shutdown support services
@@ -634,7 +625,9 @@ async fn persist(
     dyn_client: &DynamoClient,
     table_name: &str,
     //
-    lru: Arc<tokio::sync::Mutex<lru::LRUcache>>,
+    lru: Arc<tokio::sync::Mutex<lru::LRUevict>>,
+    cache: Arc<tokio::sync::Mutex<cache::ReverseCache>>,
+    //
     mut bat_w_req: Vec<WriteRequest>,
     add_rvs_edge: bool,
     //
@@ -749,6 +742,7 @@ async fn persist(
                             dyn_client
                             , table_name
                             , lru.clone()
+                            , cache.clone()
                             , evict_query_ch.clone()
                             , evict_client_send_ch.clone()
                             , &mut evict_srv_resp_ch
@@ -867,6 +861,7 @@ async fn persist(
                                     dyn_client
                                     , table_name
                                     , lru.clone()
+                                    , cache.clone()
                                     , evict_query_ch.clone()
                                     , evict_client_send_ch.clone()
                                     , &mut evict_srv_resp_ch
@@ -975,6 +970,7 @@ async fn persist(
                                     dyn_client
                                     , table_name
                                     , lru.clone()
+                                    , cache.clone()
                                     , evict_query_ch.clone()
                                     , evict_client_send_ch.clone()
                                     , &mut evict_srv_resp_ch
