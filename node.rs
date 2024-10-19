@@ -5,12 +5,14 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use uuid::Uuid;
 
-// NodeState is a redundant concept. Mutex lock will mean concurrent access will prevent others see the State while it is in transition.
+// EvictState is a redundant concept. Mutex lock will mean concurrent access will prevent others see the State while it is in transition.
 // Maybe useful to debug purposes.
-#[derive(Clone)]
-pub enum NodeState {
+#[derive(Clone, PartialEq, PartialOrd)]
+pub enum EvictState {
     Evicting,
     Loading,
+    Abort,
+    Saving,
     Available,
 }
 
@@ -19,7 +21,7 @@ pub struct RNode {
     pub node: Uuid,     // child or associated OvB Uuid
     pub rvs_sk: String, // child or associated OvB batch SK
     //
-    pub state: NodeState,
+    pub state: EvictState,
     // edge count at node initialisation (new or db sourced)
     pub init_cnt: u32,
     // accumlate edge data into these Vec's
@@ -42,7 +44,7 @@ impl RNode {
         RNode {
             node: Uuid::nil(),
             rvs_sk: String::new(), //
-            state: NodeState::Loading, //
+            state: EvictState::Loading, //
             init_cnt: 0,           // edge cnt at initialisation (e.g as read from database)
                                    //
             target_uid: vec![],
@@ -61,7 +63,7 @@ impl RNode {
         RNode {
             node: rkey.0.clone(),
             rvs_sk: rkey.1.clone(), //
-            state: NodeState::Loading, //
+            state: EvictState::Loading, //
             init_cnt: 0,            //
             target_uid: vec![],     // target_uid.len() total edges added in current sp session
             target_bid: vec![],
@@ -105,7 +107,7 @@ impl RNode {
             None =>  return,
             Some(v) => v.into(),
         };
-        self.state = NodeState::Available;
+        self.state = EvictState::Available;
         // update self with db data
         self.init_cnt = ri.init_cnt;
         //

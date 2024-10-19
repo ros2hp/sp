@@ -1,7 +1,8 @@
 use crate::types;
 use crate::cache::ReverseCache;
 
-use crate::node::RNode;
+use crate::node::{RNode, EvictState};
+
 use crate::{QueryMsg, RKey};
 
 use std::collections::{HashMap, HashSet};
@@ -134,7 +135,12 @@ pub fn start_service(
                     tasks-=1;
                     
                     println!("Event SErvice: completed msg: tasks {}",tasks);
-                    pending.0.remove(&evict_rkey);
+                    pending.0.remove(&evict_rkey);  
+                    {
+                        // evict rkey from cache
+                        let mut cache_guard = cache.lock().await;
+                        cache_guard.0.remove(&evict_rkey);
+                    }
                     // send to client if one is waiting on query channel
                     if let Some(client_ch) = query_client.0.get(&evict_rkey) {
                         // send ack of completed eviction to waiting client
@@ -148,16 +154,38 @@ pub fn start_service(
 
                 Some(query_msg) = client_query_rx.recv() => {
 
+                    let mut ack_sent=false;
                     let result = match pending.0.contains(&query_msg.0) {
                         true => {
-                            query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
+                            {
+                                let cache_guard = cache.lock().await;
+                                let arc_node = cache_guard.0.get(&query_msg.0).unwrap().clone();
+                                let mut node = arc_node.lock().await;
+
+                                if node.state == EvictState::Saving {
+                                    query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
+                                 
+                                } else {
+                                    node.state = EvictState::Abort;
+                                    // remove from evict queue and send ack (false).
+                                    pending.0.remove(&query_msg.0);
+                                    node.state != EvictState::Available;
+                                    // 
+                                    if let Err(err) = query_msg.1.send(false).await {
+                                        panic!("Error in sending query_msg [{}]",err)
+                                    };
+                                    ack_sent=true;
+                                } 
+                            }
                             true
                             },
                         false => false
                     };
-                    if let Err(err) = query_msg.1.send(result).await {
-                        panic!("Error in sending query_msg [{}]",err)
-                    };
+                    if !ack_sent {
+                        if let Err(err) = query_msg.1.send(result).await {
+                            panic!("Error in sending query_msg [{}]",err)
+                        };
+                    }
                 },
 
                 _ = shutdown_ch.recv(), if tasks == 0 => {
@@ -197,6 +225,10 @@ async fn persist_rnode(
     // use db cache values to decide nature of updates to db
     // Note for LIST_APPEND Dynamodb will scan the entire attribute value before appending, so List should be relatively small < 10000.
     let mut node = arc_node.lock().await;
+    if node.state == EvictState::Abort {
+        return
+    }
+    node.state= EvictState::Saving;
     let table_name: String = table_name_.into();
     let mut target_uid: Vec<AttributeValue>;
     let mut target_bid: Vec<AttributeValue>;

@@ -86,7 +86,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         // abort if lru_entry is at head of lru
         match self.head {
             None => {
-                println!("LRU empty - about to add lru_entry");
+                println!("LRU empty - about to add an entry");
             }
             Some(ref v) => {
                 if v.lock().await.key == rkey {
@@ -98,7 +98,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
 
         let lru_entry=Arc::clone(self.lookup.get_mut(&rkey).as_ref().unwrap());
         {
-            // detach lru_entry from LRU before attaching at head
+            // detach the entry before attaching to LRU head
             let mut lru_entry_guard = lru_entry.lock().await;
 
             let prev_ = lru_entry_guard.prev.as_ref().unwrap();
@@ -122,7 +122,8 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
 
 
 
-
+    // prerequisite - lru_entry has been confirmed NOT to be in lru-cache.
+    // note: can only execute methods on LRUevict if lock on is has been acquired as it is embedded in Arc<Mutex<>>
     pub async fn attach(
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
         rkey : RKey,
@@ -155,8 +156,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         match self.head {
             None => { 
                 // empty LRU 
-                println!("<<< attach: empty LRU set head and tail");
-                
+                println!("<<< attach: empty LRU set head and tail");            
                 self.head = Some(e.clone());
                 self.tail = Some(e.clone());
                 }
