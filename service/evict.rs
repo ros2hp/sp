@@ -241,7 +241,7 @@ async fn persist_rnode(
     let edge_cnt = node.target_uid.len();
     let init_cnt = node.init_cnt as usize;
     
-    println!("Evict Service: Persist....init_cnt {}",init_cnt);
+    println!("Evict Service: Persist....init_cnt {}  rkey = {:?}",init_cnt,rkey);
 
     if init_cnt <= crate::EMBEDDED_CHILD_NODES  {
 
