@@ -153,24 +153,27 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         // attach to head of LRU
         let mut new_lru_entry = Entry::new(rkey.clone()); 
         let e=Arc::new(Mutex::new(new_lru_entry.clone()));
-        match self.head {
+        match self.head.clone() {
             None => { 
                 // empty LRU 
-                println!("<<< attach: empty LRU set head and tail");            
+                println!("LRU <<< attach: empty LRU set head and tail");            
                 self.head = Some(e.clone());
                 self.tail = Some(e.clone());
                 }
             Some(ref e) => {
+                println!("LRU <<< NEW head {:?}",rkey.clone()); 
                 let mut head_guard = e.lock().await;
                 new_lru_entry.next = Some(e.clone());
                 let arc_new_lru_entry = Arc::new(Mutex::new(new_lru_entry));
                 head_guard.prev = Some(Arc::downgrade(&arc_new_lru_entry.clone()));
+                self.head=Some(arc_new_lru_entry);
             }
         }
-        self.head=Some(e.clone());
         self.cnt+=1;
+        println!("LRU cnt {}",self.cnt);
 
         self.lookup.insert(rkey, e); 
+        println!("LRU lookup len {}",self.lookup.len());
         
     }
 }
