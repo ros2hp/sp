@@ -12,7 +12,7 @@ pub enum EvictState {
     Evicting,
     Loading,
     Abort,
-    Saving,
+    Persist,
     Available,
 }
 

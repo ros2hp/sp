@@ -158,18 +158,21 @@ pub fn start_service(
                     let result = match pending.0.contains(&query_msg.0) {
                         true => {
                             {
+                                // node is to be evicted
                                 let cache_guard = cache.lock().await;
                                 let arc_node = cache_guard.0.get(&query_msg.0).unwrap().clone();
                                 let mut node = arc_node.lock().await;
 
-                                if node.state == EvictState::Saving {
+                                if node.state == EvictState::Persist {
+                                    // save client details to ack when persist completes
                                     query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
                                  
                                 } else {
+
+                                    // remove from evict queue and send ack (false).                                    
                                     node.state = EvictState::Abort;
-                                    // remove from evict queue and send ack (false).
                                     pending.0.remove(&query_msg.0);
-                                    node.state != EvictState::Available;
+                                    node.state = EvictState::Available;
                                     // 
                                     if let Err(err) = query_msg.1.send(false).await {
                                         panic!("Error in sending query_msg [{}]",err)
@@ -179,6 +182,7 @@ pub fn start_service(
                             }
                             true
                             },
+
                         false => false
                     };
                     if !ack_sent {
@@ -228,7 +232,7 @@ async fn persist_rnode(
     if node.state == EvictState::Abort {
         return
     }
-    node.state= EvictState::Saving;
+    node.state= EvictState::Persist;
     let table_name: String = table_name_.into();
     let mut target_uid: Vec<AttributeValue>;
     let mut target_bid: Vec<AttributeValue>;

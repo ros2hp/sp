@@ -39,45 +39,60 @@ impl RKey {
         
             None => {
                 drop(cache_guard);
-                // not cached ... check if node currently queued in eviction service.
-                if let Err(e) = evict_query_ch
-                    .send(QueryMsg::new(self.clone(), evict_client_send_ch.clone()))
-                    .await
-                {
-                    panic!("evict channel comm failed = {}", e);
-                }
-                let resp = match evict_srv_resp_ch.recv().await {
-                    Some(resp) => resp,
-                    None => {
-                        panic!("communication with evict service failed")
-                    }
-                };
-                if resp {
-                    // wait while node is evicted...
-                    evict_srv_resp_ch.recv().await;
-                }
-                // create node and populate from db
+                // create a fresh node and populate from db
                 let mut rnode = RNode::new_with_key(self);
-
                 rnode.load_from_db(dyn_client, table_name, self).await;
 
                 rnode.add_reverse_edge(target.clone(), bid as u32, id as u32);
-
+                // add to cache and evict LRU 
                 {
                     let mut cache_guard = cache.lock().await;
                     cache_guard.0.insert(self.clone(), Arc::new(tokio::sync::Mutex::new(rnode)));
-                }
-
+                }                   
                 let mut lru_guard= lru.lock().await;
                 lru_guard.attach(self.clone()).await;
+                
             }
             
             Some(rnode) => {
-  
-                let mut lru_guard = lru.lock().await;
-                let mut rnode_guard = rnode.lock().await;
-                rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                lru_guard.move_to_head(self.clone());
+
+                // cached but check if node currently queued for eviction.
+                if let Err(e) = evict_query_ch
+                  .send(QueryMsg::new(self.clone(), evict_client_send_ch.clone()))
+                  .await
+                {
+                    panic!("evict channel comm failed = {}", e);
+                }
+                let evict_resp = match evict_srv_resp_ch.recv().await {
+                  Some(resp) => resp,
+                  None => {
+                      panic!("communication with evict service failed")
+                  }
+                };
+
+                if !evict_resp {
+                    // node being evicted and cannot be aborted as currently persisting.
+                    evict_srv_resp_ch.recv().await;
+                    // create a fresh node and populate from db
+                    let mut rnode = RNode::new_with_key(self);
+                    rnode.load_from_db(dyn_client, table_name, self).await;
+
+                    rnode.add_reverse_edge(target.clone(), bid as u32, id as u32);
+                    // add to cache and evict LRU 
+                    {
+                        let mut cache_guard = cache.lock().await;
+                        cache_guard.0.insert(self.clone(), Arc::new(tokio::sync::Mutex::new(rnode)));
+                    }                   
+                    let mut lru_guard= lru.lock().await;
+                    lru_guard.attach(self.clone()).await; 
+                
+                } else {
+
+                    let mut lru_guard = lru.lock().await;
+                    let mut rnode_guard = rnode.lock().await;
+                    rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
+                    lru_guard.move_to_head(self.clone());
+                }
             }
         }
     }

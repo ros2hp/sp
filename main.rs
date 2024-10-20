@@ -876,7 +876,6 @@ async fn persist(
                         break;
                     }
                 }
-
                 // =============================================
                 // keep adding batches across ovbs (round robin)
                 // =============================================
