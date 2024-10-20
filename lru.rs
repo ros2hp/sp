@@ -31,8 +31,8 @@ impl Entry {
 pub struct LRUevict {
     capacity: usize,
     cnt : usize,
-    //
-    lookup : BTreeMap<RKey,Arc<Mutex<Entry>>>,
+    // pointer to Entry value in the LRU linked list for a RKey
+    lookup : HashMap<RKey,Arc<Mutex<Entry>>>,
     //
     evict_submit_ch: tokio::sync::mpsc::Sender<RKey>,
     //
@@ -51,7 +51,7 @@ impl LRUevict {
         Arc::new(tokio::sync::Mutex::new(LRUevict {
             capacity: cap,
             cnt: 0,
-            lookup: BTreeMap::new(),
+            lookup: HashMap::new(),
             evict_submit_ch: ch,
             head: None,
             tail: None,

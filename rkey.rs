@@ -39,6 +39,8 @@ impl RKey {
         
             None => {
                 drop(cache_guard);
+
+                // the evict service will remove RKey from cache only after it has been persisted.
                 // create a fresh node and populate from db
                 let mut rnode = RNode::new_with_key(self);
                 rnode.load_from_db(dyn_client, table_name, self).await;

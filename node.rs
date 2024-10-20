@@ -130,12 +130,11 @@ impl RNode {
             .push(AttributeValue::N(target_id.to_string()));
         
     }
-
     //
 }
 
 // Populate reverse cache with return values from Dynamodb.
-// note: not interested in TARGET* attributes only OvB about TARGET*
+// note: not interested in TARGET* attributes only OvB* attributes (metadata about TARGET*)
 impl From<HashMap<String, AttributeValue>> for RNode {
     //    HashMap.into() -> RNode
 

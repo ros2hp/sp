@@ -137,7 +137,7 @@ pub fn start_service(
                     println!("Event SErvice: completed msg: tasks {}",tasks);
                     pending.0.remove(&evict_rkey);  
                     {
-                        // evict rkey from cache
+                        // evict rkey from cache - only after it has been persisted
                         let mut cache_guard = cache.lock().await;
                         cache_guard.0.remove(&evict_rkey);
                     }
