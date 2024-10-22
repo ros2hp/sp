@@ -137,12 +137,11 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
         rkey : RKey,
     ) {
-    
         println!("LRU attach {:?}",rkey);
         if self.cnt > self.capacity {
             println!("LRU evict...");
-            // unlink tail lru_entry from lru and notify evict service.
-            // Clone REntry as about to purge it from cache.
+            // unlink tail lru_entry from lru and notify evict service to persist data and purge from cache.
+            // point LRU tail to previous tail entry.
             let evict_lru_entry = self.tail.as_ref().unwrap().clone();
 
             let Some(new_tail) = evict_lru_entry.lock().await.prev.as_ref().unwrap().upgrade() else {panic!("Expecte Some")};
@@ -181,7 +180,6 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         }
         self.cnt+=1;
         //println!("LRU cnt {}",self.cnt);
-
         self.lookup.insert(rkey, e); 
         //println!("LRU lookup len {}",self.lookup.len());
         

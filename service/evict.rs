@@ -173,7 +173,7 @@ pub fn start_service(
                         cache_guard.0.remove(&evict_rkey);
                     }
                     {
-                        //println!("EVICT: about to remove lookup entry for evict_rkey {:?}",evict_rkey);
+                        //println!("EVICT: about to remove entry from LRU lookup  {:?}",evict_rkey);
                         let mut lru_guard = lru.lock().await;
                         lru_guard.remove(&evict_rkey);
                     }
@@ -305,6 +305,8 @@ async fn persist_rnode(
 
     let arc_node: Arc<tokio::sync::Mutex<RNode>>;
     {
+        // sync'ing issue: rkey is removed from cache from previous eviction submit
+        // 
         let cache_guard = cache.lock().await;
         arc_node = match cache_guard.0.get(&rkey) {
             None => {
