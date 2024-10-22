@@ -5,25 +5,12 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use uuid::Uuid;
 
-// EvictState is a redundant concept. Mutex lock will mean concurrent access will prevent others see the State while it is in transition.
-// Maybe useful to debug purposes.
-#[derive(Clone, PartialEq, PartialOrd)]
-pub enum EvictState {
-    Evicting,
-    Loading,
-    Abort,
-    Persist,
-    Available,
-}
 
 #[derive(Clone)]
 pub struct RNode {
     pub node: Uuid,     // child or associated OvB Uuid
     pub rvs_sk: String, // child or associated OvB batch SK
-    //
-    pub state: EvictState,
-    // edge count at node initialisation (new or db sourced)
-    pub init_cnt: u32,
+    pub init_cnt: u32,  // edge count at node initialisation (new or db sourced)
     // accumlate edge data into these Vec's
     pub target_uid: Vec<AttributeValue>,
     pub target_bid: Vec<AttributeValue>,
@@ -31,10 +18,10 @@ pub struct RNode {
     // metadata that describes how to populate target* into db attributes when persisted
     pub ovb: Vec<Uuid>,  // Uuid of OvB
     pub obid: Vec<u32>,  // current batch id in each OvB
-    pub obcnt: Vec<u32>, // edge count in batch
-    pub oblen: Vec<u32>, // count of itmes in current batch across OvBs
+    //pub oblen: Vec<u32>, // count of items in current batch in current batch in each OvB block
     pub oid: Vec<u32>,
     pub ocur: Option<u8>, // current Ovb in use
+    pub obcnt: usize, // edge count in current batch of current OvB
     //
     //
 }
@@ -44,7 +31,6 @@ impl RNode {
         RNode {
             node: Uuid::nil(),
             rvs_sk: String::new(), //
-            state: EvictState::Loading, //
             init_cnt: 0,           // edge cnt at initialisation (e.g as read from database)
                                    //
             target_uid: vec![],
@@ -52,8 +38,8 @@ impl RNode {
             target_id: vec![], //
             ovb: vec![],
             obid: vec![],
-            oblen: vec![],
-            obcnt: vec![],
+            //oblen: vec![],
+            obcnt: 0,
             oid: vec![],
             ocur: None, //
         }
@@ -63,14 +49,13 @@ impl RNode {
         RNode {
             node: rkey.0.clone(),
             rvs_sk: rkey.1.clone(), //
-            state: EvictState::Loading, //
             init_cnt: 0,            //
             target_uid: vec![],     // target_uid.len() total edges added in current sp session
             target_bid: vec![],
             target_id: vec![], //
             ovb: vec![],
-            obcnt: vec![],
-            oblen: vec![],
+            obcnt:0,
+            //oblen: vec![],
             obid: vec![],
             oid: vec![],
             ocur: None, //
@@ -107,14 +92,13 @@ impl RNode {
             None =>  return,
             Some(v) => v.into(),
         };
-        self.state = EvictState::Available;
         // update self with db data
         self.init_cnt = ri.init_cnt;
         //
         self.ovb = ri.ovb;   
         self.obid = ri.obid; 
         self.obcnt = ri.obcnt; 
-        self.oblen = ri.oblen; 
+        //self.oblen = ri.oblen; 
         self.oid = ri.oid;
         self.ocur = ri.ocur;
     }
@@ -149,7 +133,7 @@ impl From<HashMap<String, AttributeValue>> for RNode {
                 types::CNT => edge.init_cnt = types::as_u32_2(v).unwrap(),
                 //
                 types::OVB => edge.ovb = types::as_luuid(v).unwrap(),
-                //types::OVB_CNT => edge.obcnt = types::as_lu32(v).unwrap(),
+                types::OVB_CNT => edge.obcnt = types::as_u32_2(v).unwrap() as usize,
                 types::OVB_BID => edge.obid = types::as_lu32(v).unwrap(),
                 types::OVB_ID => edge.oid = types::as_lu32(v).unwrap(),
                 types::OVB_CUR => edge.ocur = types::as_u8_2(v),

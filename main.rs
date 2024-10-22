@@ -45,7 +45,8 @@ const OV_BLOCK_UID: u8 = 4; // this entry represents an overflow block. Current 
 const OV_BATCH_MAX_SIZE: u8 = 5; // overflow batch reached max entries - stop using. Will force creating of new overflow block or a new batch.
 const _EDGE_FILTERED: u8 = 6; // set to true when edge fails GQL uid-pred  filter
 const DYNAMO_BATCH_SIZE: usize = 25;
-const MAX_SP_TASKS: usize = 4;
+const MAX_SP_TASKS : usize = 4;
+const LRU_CAPACITY : usize = 20;
 
 const LS: u8 = 1;
 const LN: u8 = 2;
@@ -170,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let mysql_dbname =
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
     let graph = env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
-    let table_name = "RustGraph.dev.4";
+    let table_name = "RustGraph.dev.5";
     // ===========================
     // 2. Create a Dynamodb Client
     // ===========================
@@ -181,7 +182,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // =======================================
     let (node_types, graph_prefix_wdot) = types::fetch_graph_types(&dynamo_client, graph).await?;
 
-    println!("RNode Types:");
     for t in node_types.0.iter() {
         println!(
             "RNode type {} [{}]    reference {}",
@@ -224,7 +224,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ================================================
     // create eviction LRU and cache for reverse edges
     // ================================================
-    let (lru_m, cache) = lru::LRUevict::new(20, evict_submit_ch_p.clone()); 
+    println!("LRU CAPACITY  {}",LRU_CAPACITY);
+    let (lru_m, cache) = lru::LRUevict::new(LRU_CAPACITY, evict_submit_ch_p.clone()); 
 
     let evict_service = service::evict::start_service(
         dynamo_client.clone(),
@@ -233,6 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         evict_query_rx,
         evict_shutdown_ch,
         cache.clone(),
+        lru_m.clone(),
     );
 
     // ================================
@@ -266,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // =======================================================
     // 6. MySQL query: load all parent node edges into memory (TODO: batch query)
     // =======================================================
+    println!("About to SQL 2");
     let mut parent_edges: HashMap<Puid, HashMap<SortK, Vec<Cuid>>> = HashMap::new();
     let child_edge = "Select puid,sortk,cuid from test_childedge order by puid,sortk"
         .with(())
@@ -294,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             }
         })
         .await?;
-
+    println!("About to SQL 2 - DONE");
     // ===========================================
     // 7. Setup asynchronous tasks infrastructure
     // ===========================================
@@ -309,11 +312,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // 9. process each parent_node and its associated edges (child nodes) in parallel
     // ===============================================================================
     for puid in parent_node {
-        // if puid.to_string() = "5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" || puid.to_string() = { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
+        println!("puid {}",puid);
+        // if puid.to_string() != "0eb40290-da22-4619-91d2-80e708eb4abb" {//"0abc72f2-79c2-4af5-b7f4-38eefb77618d" {// 5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" { // || puid.to_string() = { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
         //     continue
         // }
 
-        println!("puid  [{}]", puid.to_string());
+        // println!("puid  [{}]", puid.to_string());
         // ------------------------------------------
         let p_sk_edges = match parent_edges.remove(&puid) {
             None => {
@@ -343,6 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             // ============================================
 
             for (p_sk_edge, children) in p_sk_edges {
+            
                 // Container for Overflow Block Uuids, also stores all propagated data.
                 let mut ovb_pk: HashMap<String, Vec<Uuid>> = HashMap::new();
                 let mut items: HashMap<SortK, Operation> = HashMap::new();
@@ -364,9 +369,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 // used for testing only - comment out this if when not testing
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 if p_node_ty.short_nm() != "Fm" {
-                    return
+                    println!("break...");
+                    break;
                 }
+                // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
+                
+                for (k,v) in ovb_pk.iter() {
+                    println!("obv_pk {} {:?}",k,v);
+                }
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
 
@@ -400,6 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                             sk_query.push_str("#:");
                             sk_query.push_str(attrs[0]);
                         }
+
                         // ============================================================
                         // 9.2.3.1.1 fetch child node scalar data by sortk partition
                         // ============================================================
@@ -570,6 +582,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     evict_query_ch.clone(),
                 )
                 .await;
+
             }
             // ===================================
             // 9.2.4 send complete message to main
@@ -602,9 +615,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ==========================================================================
     let lru_guard = lru_m.lock().await; 
     let mut entry = lru_guard.head.clone();
+    drop(lru_guard);
+    println!("Shutdown in progress..evict entries in LRU");
     while let Some(entry_) = entry {
         
             let rkey = entry_.lock().await.key.clone();
+            println!("Main: evict {:?}",rkey);
             if let Err(err) = evict_submit_ch_p 
                         .send(rkey)
                         .await {
@@ -613,10 +629,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
 
             entry = entry_.lock().await.next.clone();      
     }
+    //sleep(Duration::from_millis(2000)).await;
     // ==============================
     // Shutdown support services
     // ==============================
-    println!("Waiting for support services to finish...");
     shutdown_broadcast_sender.send(0);
     retry_service.await;
     evict_service.await;
@@ -648,7 +664,6 @@ async fn persist(
     // evict_recv_ch: receiver - used by this routine to receive respone from eviction service
     let (evict_client_send_ch, mut evict_srv_resp_ch) = tokio::sync::mpsc::channel::<bool>(1);
 
-    println!("PERSIST........add_rvs_edge = {} reverse_sk [{}]",add_rvs_edge,reverse_sk);
     // persist to database
     for (sk, v) in items {
         match v {
@@ -733,13 +748,13 @@ async fn persist(
                         panic!("unexpected entry match in Operation::Propagate")
                     }
                 };
-
-                //println!("save_item...{}",bat_w_req.len());
+                
                 bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
                 if add_rvs_edge {
 
                     for (id, child) in children.into_iter().enumerate() {
+                        
                         let rkey = RKey::new(child.clone(), reverse_sk.clone());
                         rkey.add_reverse_edge(
                             dyn_client
@@ -774,7 +789,7 @@ async fn persist(
                         let mut sk_w_bid = sk.clone();
                         sk_w_bid.push('%');
                         sk_w_bid.push_str(&bid.to_string());
-
+                        
                         let put = aws_sdk_dynamodb::types::PutRequest::builder();
                         let mut put = put
                             .item(types::PK, AttributeValue::B(Blob::new(ovb.clone())))
@@ -960,8 +975,7 @@ async fn persist(
                             }
                         }
 
-                        bat_w_req =
-                            save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                        bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
 
                         if add_rvs_edge {
                             for (id, child) in children.into_iter().enumerate() {
@@ -995,11 +1009,11 @@ async fn persist(
         } // end match
 
         if bat_w_req.len() > 0 {
-            //print_batch(bat_w_req);
+        //print_batch(bat_w_req);
             bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
         }
     } // end for
-
+    
     if bat_w_req.len() > 0 {
         //print_batch(bat_w_req);
         bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
@@ -1075,9 +1089,9 @@ async fn fetch_p_edge_meta<'a, T: Into<String>>(
         );
     }
 
-    //let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();//TODO:consider split_off + mem::swap
-    let mut ovb_pk: Vec<Uuid> = di.nd.as_mut().expect("nd is None").split_off(ovb_start_idx);
-    mem::swap(&mut ovb_pk,  &mut di.nd.unwrap());
+    let ovb_pk: Vec<Uuid> = di.nd.expect("nd is None").drain(ovb_start_idx..).collect();//TODO:consider split_off + mem::swap
+    // let mut ovb_pk: Vec<Uuid> = di.nd.as_mut().expect("nd is None").split_off(ovb_start_idx);
+    // mem::swap(&mut ovb_pk,  &mut di.nd.unwrap());
 
     (node_types.get(&di.ty.expect("ty is None")), ovb_pk)
 }
@@ -1089,6 +1103,7 @@ async fn save_item(
     put: PutRequestBuilder,
     table_name: &str,
 ) -> Vec<WriteRequest> {
+
     match put.build() {
         Err(err) => {
             println!("error in write_request builder: {}", err);
@@ -1098,7 +1113,7 @@ async fn save_item(
         }
     }
     //bat_w_req = print_batch(bat_w_req);
-
+    
     if bat_w_req.len() == DYNAMO_BATCH_SIZE {
         // =================================================================================
         // persist to Dynamodb
@@ -1107,6 +1122,7 @@ async fn save_item(
         //bat_w_req = print_batch(bat_w_req);
     }
     bat_w_req
+
 }
 
 async fn persist_dynamo_batch(
@@ -1115,6 +1131,8 @@ async fn persist_dynamo_batch(
     retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     table_name: &str,
 ) -> Vec<WriteRequest> {
+
+    
     let bat_w_outp = dyn_client
         .batch_write_item()
         .request_items(table_name, bat_w_req)
@@ -1148,21 +1166,20 @@ async fn persist_dynamo_batch(
         }
     }
     let new_bat_w_req: Vec<WriteRequest> = vec![];
-
     new_bat_w_req
 }
 
 fn print_batch(bat_w_req: Vec<WriteRequest>) -> Vec<WriteRequest> {
-    for r in bat_w_req {
-        let WriteRequest {
-            put_request: pr, ..
-        } = r;
-        println!(" ------------------------  ");
-        for (attr, attrval) in pr.unwrap().item {
-            // HashMap<String, AttributeValue>,
-            println!(" putRequest [{}]   {:?}", attr, attrval);
-        }
-    }
+    // for r in bat_w_req {
+    //     let WriteRequest {
+    //         put_request: pr, ..
+    //     } = r;
+    //     println!(" ------------------------  ");
+    //     for (attr, attrval) in pr.unwrap().item {
+    //         // HashMap<String, AttributeValue>,
+    //         println!(" putRequest [{}]   {:?}", attr, attrval);
+    //     }
+    // }
 
     let new_bat_w_req: Vec<WriteRequest> = vec![];
 

@@ -78,11 +78,19 @@ impl LRUevict {
 
 impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
     
+    
+    pub fn remove( &mut self, rkey: &RKey) {
+        //println!("LRU remove {:?}",rkey);
+        self.lookup.remove(rkey);
+    }
+    
+    
     // prerequisite - lru_entry has been confirmed to be in lru-cache.
     pub async fn move_to_head(
         &mut self,
         rkey: RKey,
     ) {  
+        println!("LRU move_to_head {:?}",rkey);
         // abort if lru_entry is at head of lru
         match self.head {
             None => {
@@ -91,12 +99,13 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             Some(ref v) => {
                 if v.lock().await.key == rkey {
                     // rkey already at head
+                    println!("LRU at head return");
                     return
                 }    
             }
         }
 
-        let lru_entry=Arc::clone(self.lookup.get_mut(&rkey).as_ref().unwrap());
+        let lru_entry=Arc::clone(self.lookup.get(&rkey).as_ref().unwrap());
         {
             // detach the entry before attaching to LRU head
             let mut lru_entry_guard = lru_entry.lock().await;
@@ -128,8 +137,10 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
         rkey : RKey,
     ) {
+    
+        println!("LRU attach {:?}",rkey);
         if self.cnt > self.capacity {
-            println!("evict...");
+            println!("LRU evict...");
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
             let evict_lru_entry = self.tail.as_ref().unwrap().clone();
@@ -160,8 +171,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
                 self.head = Some(e.clone());
                 self.tail = Some(e.clone());
                 }
-            Some(ref e) => {
-                println!("LRU <<< NEW head {:?}",rkey.clone()); 
+            Some(e) => {
                 let mut head_guard = e.lock().await;
                 new_lru_entry.next = Some(e.clone());
                 let arc_new_lru_entry = Arc::new(Mutex::new(new_lru_entry));
@@ -170,10 +180,10 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             }
         }
         self.cnt+=1;
-        println!("LRU cnt {}",self.cnt);
+        //println!("LRU cnt {}",self.cnt);
 
         self.lookup.insert(rkey, e); 
-        println!("LRU lookup len {}",self.lookup.len());
+        //println!("LRU lookup len {}",self.lookup.len());
         
     }
 }

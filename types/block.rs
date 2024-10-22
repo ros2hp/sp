@@ -69,7 +69,8 @@ pub const TARGET_ID: &str = "Target_id";
 //pub const OVB : &str = "OVB";     // List of UUIDs for OvBs
 pub const OVB_BID: &str = "OBID"; // List of current Batch ID in each OvB
 pub const OVB_ID: &str = "OID"; // List of current index for each Batch
-pub const OVB_CUR: &str = "OCUR";
+pub const OVB_CUR: &str = "OCUR"; // ovb last used
+pub const OVB_CNT: &str = "OCNT"; // cnt in current overflow batch in current ovb
 
 // XF values
 pub const CHILD: i8 = 1;
