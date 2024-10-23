@@ -376,7 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
                 
                 for (k,v) in ovb_pk.iter() {
-                    println!("obv_pk {} {:?}",k,v);
+                    println!("k obv_p{} {:?}",k,v);
                 }
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"

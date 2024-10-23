@@ -115,15 +115,6 @@ pub fn start_service(
                     //  no locks acquired  - apart from Cache in async routine, which is therefore safe.
                     
                     // consistency check: check rkey in cache
-                    let mut found_in_cache = true;
-                    {
-                        let mut cache_guard = cache.lock().await;
-                        if !cache_guard.0.contains_key(&rkey) {
-                            // cancel evict...
-                            found_in_cache=false;
-                        }
-                    }
-                    if found_in_cache {
 
                         println!("EVICT: submit event for {:?} tasks [{}]",rkey, tasks);
     
@@ -156,7 +147,6 @@ pub fn start_service(
                                 ).await;
     
                             });
-                        }
                     }
                 },
 
@@ -166,31 +156,37 @@ pub fn start_service(
                     tasks-=1;
                     
                    // //println!("EVICT: completed msg: tasks {}",tasks);
+                    // {
+                    //     // evict rkey from cache - only after it has been persisted
+                    //     println!("EVICT: about to purge [{:?}] from cache.",evict_rkey);
+                    //     let mut cache_guard = cache.lock().await;
+                    //     cache_guard.0.remove(&evict_rkey);
+                    // }
                     {
-                        // evict rkey from cache - only after it has been persisted
-                        println!("EVICT: about to purge [{:?}] from cache.",evict_rkey);
-                        let mut cache_guard = cache.lock().await;
-                        cache_guard.0.remove(&evict_rkey);
-                    }
-                    {
-                        //println!("EVICT: about to remove entry from LRU lookup  {:?}",evict_rkey);
+                        //println!("EVICT: about to remove lookup entry for evict_rkey {:?}",evict_rkey);
+                        println!("EVICT: complete processing..waiting on LRU");
                         let mut lru_guard = lru.lock().await;
                         lru_guard.remove(&evict_rkey);
                     }
+                    println!("EVICT: complete processing..waiting on LRU - DONE");
                     persisting.0.remove(&evict_rkey);
                     // find index entry and remove from Pending Queue
                     pendingQ.remove(&evict_rkey);
 
                     // send ack to client if one is waiting on query channel
+                    println!("EVICT: is client waiting..");
                     if let Some(client_ch) = query_client.0.get(&evict_rkey) {
+                        println!("EVICT:   Yes.. ABOUT to send ACK to query that evict completed ");
                         // send ack of completed eviction to waiting client
                         if let Err(err) = client_ch.send(true).await {
                             panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
                         }
                         //
                         query_client.0.remove(&evict_rkey);
+                        println!("EVICT: ABOUT to send ACK to query that evict completed - DONE");
                         
                     }
+                    println!("EVICT: is client waiting..- DONE ");
                     // process next node in evict Pending Queue
                     if let Some(rkey) = pendingQ.0.pop_back() {
                                         // spawn async task to persist node
@@ -213,6 +209,7 @@ pub fn start_service(
                                             ).await;
                                         });
                     }
+                    println!("EVICT: evict complete exit");
                 },
 
                 Some(query_msg) = client_query_rx.recv() => {
@@ -248,15 +245,26 @@ pub fn start_service(
                             true
                             },
 
-                        false => false
+                        false => {   // not queued but currently persisting
+                                if persisting.0.contains(&query_msg.0) {
+                                        println!("EVICT: client query  node being persisted put {:?} in notify client queue.",query_msg.0);
+                                        // save client details to ack when persist completes
+                                        query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
+                                        true
+                                    } else {
+                                        false
+                                    }
+                            
+                        }
                     };
-                    //println!("EVICT: client query result {}. ack_sent {}",result, ack_sent);
+                    println!("EVICT: client query result {}. ack_sent {}",result, ack_sent);
                     if !ack_sent {
                         println!("EVICT: client query about to send ack {}",result);
                         if let Err(err) = query_msg.1.send(result).await {
                             panic!("Error in sending query_msg [{}]",err)
                         };
                     }
+                    println!("EVICT: exit client_query...")
                 },
 
                 _ = shutdown_ch.recv(), if tasks == 0 => {
@@ -305,16 +313,22 @@ async fn persist_rnode(
 
     let arc_node: Arc<tokio::sync::Mutex<RNode>>;
     {
-        // sync'ing issue: rkey is removed from cache from previous eviction submit
-        // 
-        let cache_guard = cache.lock().await;
+        let mut cache_guard = cache.lock().await;
         arc_node = match cache_guard.0.get(&rkey) {
             None => {
                     drop(cache_guard);
+                    println!("EVICT: persist INCONSISTENCY not in cache");
+                    if let Err(err) = evict_completed_send_ch.send(rkey.clone()).await {
+                            println!(
+                            "Sending completed evict msg to waiting client failed: {}",
+                        err
+                    );
+    }
                     return;
                 }
             Some(c) => c.clone()
-        }
+        };
+        cache_guard.0.remove(&rkey);
     }
     let mut node = arc_node.lock().await;
         
