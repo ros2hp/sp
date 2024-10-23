@@ -3,7 +3,7 @@ use crate::rkey::RKey;
 use crate::node::RNode;
 use crate::cache::ReverseCache;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Weak};
 
 use tokio::sync::Mutex;
@@ -33,6 +33,8 @@ pub struct LRUevict {
     cnt : usize,
     // pointer to Entry value in the LRU linked list for a RKey
     lookup : HashMap<RKey,Arc<Mutex<Entry>>>,
+    // when an rkey is registered in immune it will not be evicted.
+    immune : HashSet<RKey>,
     //
     evict_submit_ch: tokio::sync::mpsc::Sender<RKey>,
     //
@@ -48,10 +50,11 @@ impl LRUevict {
         ch: tokio::sync::mpsc::Sender<RKey>,
     ) -> (Arc<tokio::sync::Mutex<Self>>, Arc<Mutex<ReverseCache>>) {
         (
-        Arc::new(tokio::sync::Mutex::new(LRUevict {
+        Arc::new(tokio::sync::Mutex::new(LRUevict{
             capacity: cap,
             cnt: 0,
             lookup: HashMap::new(),
+            immune: HashSet::new(),
             evict_submit_ch: ch,
             head: None,
             tail: None,
@@ -83,7 +86,15 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         println!("LRU remove {:?}",rkey);
         self.lookup.remove(rkey);
     }
-    
+
+    // When rkey.add_reverse_edge is in play for a RKey - it will be immune from eviction.
+    pub fn set_immunity( &mut self, rkey: RKey) {
+        self.immune.insert(rkey);
+    } 
+
+    pub fn unset_immunity( &mut self, rkey: &RKey) {
+        self.immune.remove(rkey);
+    } 
     
     // prerequisite - lru_entry has been confirmed to be in lru-cache.
     pub async fn move_to_head(
@@ -125,22 +136,22 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         lru_entry_guard.prev = None;
 
         self.head = Some(lru_entry.clone());
+        
 
     }
 
 
-
-
     // prerequisite - lru_entry has been confirmed NOT to be in lru-cache.
-    // note: can only execute methods on LRUevict if lock on is has been acquired as it is embedded in Arc<Mutex<>>
+    // note: can only execute methods on LRUevict if lock has been acquired via Arc<Mutex<LRU>>
     pub async fn attach(
         &mut self, // , cache_guard:  &mut tokio::sync::MutexGuard<'_, ReverseCache>
         rkey : RKey,
     ) {
     
         println!("LRU attach {:?}",rkey);
-        if self.cnt > self.capacity {
-            println!("LRU evict...");
+        if self.cnt > self.capacity && !self.immune.contains(&rkey) {
+
+            println!("LRU: evict node (it is not immune)");
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
             let evict_lru_entry = self.tail.as_ref().unwrap().clone();
@@ -151,7 +162,9 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             self.tail = Some(new_tail.clone());
             self.cnt-=1;
             
-            // notify evict service to asynchronously save to db before removing from cache
+            // =====================
+            // notify evict service
+            // =====================
             let evict_rkey = evict_lru_entry.lock().await.key.clone();
             if let Err(err) = self
                 .evict_submit_ch

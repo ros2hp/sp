@@ -113,8 +113,6 @@ pub fn start_service(
                 Some(rkey) = evict_submit_rx.recv() => {
 
                     //  no locks acquired  - apart from Cache in async routine, which is therefore safe.
-                    
-                    // consistency check: check rkey in cache
 
                         println!("EVICT: submit event for {:?} tasks [{}]",rkey, tasks);
     
@@ -296,7 +294,7 @@ async fn persist_rnode(
     dyn_client: &DynamoClient,
     table_name_: impl Into<String>,
     rkey: &RKey,
-    mut cache: Arc<tokio::sync::Mutex<ReverseCache>>,
+    cache: Arc<tokio::sync::Mutex<ReverseCache>>,
     evict_completed_send_ch: tokio::sync::mpsc::Sender<RKey>,
 ) {
     // at this point, cache is source-of-truth updated with db values if edge exists.
@@ -323,11 +321,12 @@ async fn persist_rnode(
                             "Sending completed evict msg to waiting client failed: {}",
                         err
                     );
-    }
+                    }
                     return;
                 }
             Some(c) => c.clone()
         };
+        // As of 23/oct/24 this is the only place that removes cache entries.
         cache_guard.0.remove(&rkey);
     }
     let mut node = arc_node.lock().await;
