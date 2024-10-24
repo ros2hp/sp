@@ -31,10 +31,8 @@ impl RKey {
                             ,id : usize
     ) {
     
-        println!("rkEY add_reverse_edge:  rkey={:?} about to lock cache",self);
+        println!("** RKEY add_reverse_edge:  rkey={:?} about to lock cache",self);
         let cache_guard = cache.lock().await;
-
-        println!("rkEY add_reverse_edge: - acquired cache lock");
         
         match cache_guard.0.get(&self) {
         
@@ -145,15 +143,19 @@ impl RKey {
                 
                 } else {
 
-                    let cache_guard = cache.lock().await;
+                    {
+                        println!("rkEY add_reverse_edge: - match RNODE: about to cache.lock()");
+                        let cache_guard = cache.lock().await;
+                        println!("rkEY add_reverse_edge: - match RNODE: about to cache.lock() - DONE, rnode.lock()...");
+                        let mut rnode_guard = rnode.lock().await;
+                        println!("rkEY add_reverse_edge: - match RNODE: true about add_reverse_edge");
+                        rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
+                        println!("rkEY add_reverse_edge: - match RNODE: rue about add_reverse_edge - DONE");
+                    }
                     println!("rkEY add_reverse_edge: - match RNODE: true about to lock lru");
                     let mut lru_guard = lru.lock().await;
-                    println!("rkEY add_reverse_edge: - match RNODE: true about to lock rnode");
-                    let mut rnode_guard = rnode.lock().await;
-                    println!("rkEY add_reverse_edge: - match RNODE: about to add reverse edge");
-                    rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
                     println!("rkEY add_reverse_edge: - match RNODE: about to lru_guard move_to_head....");
-                    lru_guard.move_to_head(self.clone());
+                    lru_guard.move_to_head(self.clone()).await;
                     println!("rkEY add_reverse_edge: - match RNODE: about to lru_guard move_to_head....DONE");
                     lru_guard.unset_immunity(&self); 
                 }

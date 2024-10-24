@@ -117,6 +117,12 @@ impl RNode {
     //
 }
 
+// impl Drop for RNode {
+//     fn drop(&mut self) {
+//         println!("DROP RNODE {:?}",self.uuid);
+//     }
+// }
+
 // Populate reverse cache with return values from Dynamodb.
 // note: not interested in TARGET* attributes only OvB* attributes (metadata about TARGET*)
 impl From<HashMap<String, AttributeValue>> for RNode {

@@ -46,7 +46,7 @@ const OV_BATCH_MAX_SIZE: u8 = 5; // overflow batch reached max entries - stop us
 const _EDGE_FILTERED: u8 = 6; // set to true when edge fails GQL uid-pred  filter
 const DYNAMO_BATCH_SIZE: usize = 25;
 const MAX_SP_TASKS : usize = 4;
-const LRU_CAPACITY : usize = 20;
+const LRU_CAPACITY : usize = 50;
 
 const LS: u8 = 1;
 const LN: u8 = 2;
@@ -375,9 +375,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
                 
-                for (k,v) in ovb_pk.iter() {
-                    println!("k obv_p{} {:?}",k,v);
-                }
+                // for (k,v) in ovb_pk.iter() {
+                //     println!("k obv_p{} {:?}",k,v);
+                // }
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
 

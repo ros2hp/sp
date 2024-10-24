@@ -28,6 +28,14 @@ impl Entry {
         }
     }
 }
+
+// impl Drop for Entry {
+//         fn drop(&mut self) {
+//         println!("\nDROP LRU Entry {:?}\n",self.key);
+//     }
+// }
+
+
 pub struct LRUevict {
     capacity: usize,
     cnt : usize,
@@ -79,6 +87,7 @@ impl LRUevict {
 //     );
 // }
 
+
 impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
     
     
@@ -89,6 +98,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
 
     // When rkey.add_reverse_edge is in play for a RKey - it will be immune from eviction.
     pub fn set_immunity( &mut self, rkey: RKey) {
+        println!("LRU: set_immunity for {:?}",rkey);
         self.immune.insert(rkey);
     } 
 
@@ -96,51 +106,6 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         self.immune.remove(rkey);
     } 
     
-    // prerequisite - lru_entry has been confirmed to be in lru-cache.
-    pub async fn move_to_head(
-        &mut self,
-        rkey: RKey,
-    ) {  
-        println!("LRU move_to_head {:?}",rkey);
-        // abort if lru_entry is at head of lru
-        match self.head {
-            None => {
-                println!("LRU empty - about to add an entry");
-            }
-            Some(ref v) => {
-                if v.lock().await.key == rkey {
-                    // rkey already at head
-                    println!("LRU at head return");
-                    return
-                }    
-            }
-        }
-
-        let lru_entry=Arc::clone(self.lookup.get(&rkey).as_ref().unwrap());
-        {
-            // detach the entry before attaching to LRU head
-            let mut lru_entry_guard = lru_entry.lock().await;
-
-            let prev_ = lru_entry_guard.prev.as_ref().unwrap();
-            let Some(prev_upgrade) =  prev_.upgrade() else {panic!("failed to upgrade weak lru_entry")};
-            let mut prev_guard = prev_upgrade.lock().await;
-
-            let next_ = lru_entry_guard.next.as_ref().unwrap();
-            let mut next_guard= next_.lock().await;
-
-            prev_guard.next = Some(next_.clone());
-            next_guard.prev = Some(Arc::downgrade(&prev_upgrade));
-        }
-        let mut lru_entry_guard = lru_entry.lock().await;
-        lru_entry_guard.next = self.head.clone();
-        lru_entry_guard.prev = None;
-
-        self.head = Some(lru_entry.clone());
-        
-
-    }
-
-
     // prerequisite - lru_entry has been confirmed NOT to be in lru-cache.
     // note: can only execute methods on LRUevict if lock has been acquired via Arc<Mutex<LRU>>
     pub async fn attach(
@@ -148,55 +113,178 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         rkey : RKey,
     ) {
     
-        println!("LRU attach {:?}",rkey);
+        println!("   ");
+        println!("******* LRU attach {:?}. ***********",rkey);
         if self.cnt > self.capacity && !self.immune.contains(&rkey) {
-
-            println!("LRU: evict node (it is not immune)");
+        
+            println!("LRU: reached LRU capacity - evict tail");
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
             let evict_lru_entry = self.tail.as_ref().unwrap().clone();
+            let mut evict_guard = evict_lru_entry.lock().await;
 
-            let Some(new_tail) = evict_lru_entry.lock().await.prev.as_ref().unwrap().upgrade() else {panic!("Expecte Some")};
-            let mut new_tail_guard = new_tail.lock().await;
-            new_tail_guard.next = None;
-            self.tail = Some(new_tail.clone());
+            match evict_guard.prev {
+                None => {panic!("LRU attach - evict_lru_entry - expected prev got None")}
+                Some(ref v) => {
+                    match v.upgrade() {
+                        None => {panic!("LRU attach - evict_lru_entry - could not upgrade")}
+                        Some(new_tail) => {
+                            let mut new_tail_guard = new_tail.lock().await;
+                            new_tail_guard.next = None;
+                            self.tail = Some(new_tail.clone()); 
+                        }
+                    }
+                }
+            }
+            evict_guard.prev=None;
+            evict_guard.next=None;
             self.cnt-=1;
-            
             // =====================
             // notify evict service
             // =====================
-            let evict_rkey = evict_lru_entry.lock().await.key.clone();
+            println!("notify evict service ...for entry {:?}",evict_guard.key);
             if let Err(err) = self
                 .evict_submit_ch
-                .send(evict_rkey)
+                .send(evict_guard.key.clone())
                 .await
             {
                 println!("Error sending on Evict channel: [{}]", err);
             }
         } 
         // attach to head of LRU
-        let mut new_lru_entry = Entry::new(rkey.clone()); 
-        let e=Arc::new(Mutex::new(new_lru_entry.clone()));
+        let arc_new_entry = Arc::new(Mutex::new(Entry::new(rkey.clone())));
         match self.head.clone() {
             None => { 
                 // empty LRU 
-                println!("LRU <<< attach: empty LRU set head and tail");            
-                self.head = Some(e.clone());
-                self.tail = Some(e.clone());
+                println!("LRU <<< attach: empty LRU set head and tail");     
+                self.head = Some(arc_new_entry.clone());
+                self.tail = Some(arc_new_entry.clone());
                 }
             Some(e) => {
-                let mut head_guard = e.lock().await;
-                new_lru_entry.next = Some(e.clone());
-                let arc_new_lru_entry = Arc::new(Mutex::new(new_lru_entry));
-                head_guard.prev = Some(Arc::downgrade(&arc_new_lru_entry.clone()));
-                self.head=Some(arc_new_lru_entry);
+                
+                let mut new_entry = arc_new_entry.lock().await;
+                let mut old_head_guard = e.lock().await;
+                // set old head prev to point to new entry
+                old_head_guard.prev = Some(Arc::downgrade(&arc_new_entry));
+                // set new entry next to point to old head entry & prev to NOne   
+                new_entry.next = Some(e.clone());
+                new_entry.prev = None;
+                // set LRU head to point to new entry
+                self.head=Some(arc_new_entry.clone());
+                
+                if let None = new_entry.next {
+                        println!("LRU INCONSISTENCY attach: expected Some for next but got NONE {:?}",rkey);
+                }
+                if let Some(_) = new_entry.prev {
+                        println!("LRU INCONSISTENCY attach: expected None for prev but got NONE {:?}",rkey);
+                }
+                if let None = new_entry.next {
+                        println!("LRU INCONSISTENCY attach: expected entry to have next but got NONE {:?}",rkey);
+                }
+                if let Some(_) = new_entry.prev {
+                        println!("LRU INCONSISTENCY attach: expected entry to have prev set to NONE {:?}",rkey);
+                }
+                if let None = old_head_guard.prev {
+                        println!("LRU INCONSISTENCY attach: expected entry to have prev set to NONE {:?}",rkey);
+                }
             }
         }
-        self.cnt+=1;
-        //println!("LRU cnt {}",self.cnt);
-
-        self.lookup.insert(rkey, e); 
-        //println!("LRU lookup len {}",self.lookup.len());
+        self.lookup.insert(rkey, arc_new_entry);
         
+        if let None = self.head {
+                println!("LRU INCONSISTENCY attach: expected LRU to have head but got NONE")
+        }
+        if let None = self.tail {
+                println!("LRU INCONSISTENCY attach: expected LRU to have tail but got NONE")
+        }
+        // print LRU 
+        // let mut entry = self.head.clone();
+        // println!("print LRU chain");
+        // let mut i = 0;
+        // while let Some(entry_) = entry {
+        //         i+=1;
+        //         let rkey = entry_.lock().await.key.clone();
+        //         println!("LRU entry {} {:?}",i, rkey);
+        //         entry = entry_.lock().await.next.clone();      
+        // }
+ 
+        self.cnt+=1;
     }
+    
+    
+    // prerequisite - lru_entry has been confirmed to be in lru-cache.
+    pub async fn move_to_head(
+        &mut self,
+        rkey: RKey,
+    ) {  
+        println!("--------------");
+        println!("***** LRU move_to_head {:?} ********",rkey);
+        // abort if lru_entry is at head of lru
+        match self.head {
+            None => {
+                panic!("LRU empty - expected entries");
+            }
+            Some(ref v) => {
+                let hd = v.lock().await.key.clone();
+                if v.lock().await.key == rkey {
+                    // rkey already at head
+                    println!("LRU entry already at head - return");
+                    return
+                }    
+            }
+        }
+
+        let lru_entry=Arc::clone(self.lookup.get(&rkey).as_ref().unwrap());
+
+        {
+            // DETACH the entry before attaching to LRU head
+            let mut lru_entry_guard = lru_entry.lock().await;
+            
+            if let None = lru_entry_guard.prev {
+                println!("LRU INCONSISTENCY move_to_head: expected entry to have prev but got NONE {:?}",rkey);
+            }
+
+            // check if moving tail entry
+            if let None = lru_entry_guard.next {
+            
+                let prev_ = lru_entry_guard.prev.as_ref().unwrap();
+                let Some(prev_upgrade) =  prev_.upgrade() else {panic!("at tail: failed to upgrade weak lru_entry {:?}",rkey)};
+                let mut prev_guard = prev_upgrade.lock().await;
+                prev_guard.next = None;
+                self.tail = Some(lru_entry_guard.prev.as_ref().unwrap().upgrade().as_ref().unwrap().clone());
+                
+            } else {
+                
+                let prev_ = lru_entry_guard.prev.as_ref().unwrap();
+                let Some(prev_upgrade) =  prev_.upgrade() else {panic!("failed to upgrade weak lru_entry {:?}",rkey)};
+                let mut prev_guard = prev_upgrade.lock().await;
+    
+                let next_ = lru_entry_guard.next.as_ref().unwrap();
+                let mut next_guard= next_.lock().await;
+
+                prev_guard.next = Some(next_.clone());
+                next_guard.prev = Some(Arc::downgrade(&prev_upgrade));           
+
+            }
+            println!(" Detach complete...")
+        }
+        // ATTACH
+        let mut lru_entry_guard = lru_entry.lock().await;
+        lru_entry_guard.next = self.head.clone();
+        
+        // adjust old head entry previous pointer to new entry (aka LRU head)
+        match self.head {
+            None => {
+                 panic!("LRU empty - expected entries");
+            }
+            Some(ref v) => {
+                let mut hd = v.lock().await;
+                hd.prev = Some(Arc::downgrade(&lru_entry)); 
+                println!("LRU move_to_head: attach old head {:?} prev to {:?} ",hd.key, lru_entry_guard.key);
+            }
+        }
+        lru_entry_guard.prev = None;
+        self.head = Some(lru_entry.clone());
+    }
+
 }
