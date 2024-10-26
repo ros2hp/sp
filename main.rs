@@ -46,7 +46,7 @@ const OV_BATCH_MAX_SIZE: u8 = 5; // overflow batch reached max entries - stop us
 const _EDGE_FILTERED: u8 = 6; // set to true when edge fails GQL uid-pred  filter
 const DYNAMO_BATCH_SIZE: usize = 25;
 const MAX_SP_TASKS : usize = 4;
-const LRU_CAPACITY : usize = 50;
+const LRU_CAPACITY : usize = 40;
 
 const LS: u8 = 1;
 const LN: u8 = 2;
@@ -159,6 +159,7 @@ impl QueryMsg {
 #[::tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>> {
     let _start_1 = Instant::now();
+    let mut task : usize = 0;
     // ===============================
     // 1. Source environment variables
     // ===============================
@@ -208,33 +209,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         retry_shutdown_ch,
         table_name,
     );
-    // start evict service
-    // setup evict channels
-    //  * queue Rkey for eviction
-    let (evict_submit_ch_p, evict_submit_rx) = tokio::sync::mpsc::channel::<RKey>(MAX_SP_TASKS*2);
-    //  * query evict service e.g. is node in evict queue?
-    let (evict_query_ch_p, evict_query_rx) =
+    // start persist service
+    // setup persist channels
+    //  * queue Rkey for persistion
+    let (persist_submit_ch_p, persist_submit_rx) = tokio::sync::mpsc::channel::<(RKey, Arc<Mutex<RNode>>)>(MAX_SP_TASKS*2);
+    //  * query persist service e.g. is node in persist queue?
+    let (persist_query_ch_p, persist_query_rx) =
         tokio::sync::mpsc::channel::<QueryMsg>(MAX_SP_TASKS * 2);
     // * shutdown
-    let evict_shutdown_ch = shutdown_broadcast_sender.subscribe();
-    // pending evict
-    println!("start evict service...");
-    //let (pending_evict_ch_p, pending_evict_rx) = tokio::sync::mpsc::channel::<Pending_Action>(MAX_SP_TASKS * 20);
- 
+    let persist_shutdown_ch = shutdown_broadcast_sender.subscribe();
+    println!("start persist service...");
+
     // ================================================
-    // create eviction LRU and cache for reverse edges
+    // create persistion LRU and cache for reverse edges
     // ================================================
     println!("LRU CAPACITY  {}",LRU_CAPACITY);
-    let (lru_m, cache) = lru::LRUevict::new(LRU_CAPACITY, evict_submit_ch_p.clone()); 
+    let (lru_m, cache) = lru::LRUevict::new(LRU_CAPACITY, persist_submit_ch_p.clone()); 
 
-    let evict_service = service::evict::start_service(
+    let persist_service = service::persist::start_service(
         dynamo_client.clone(),
         table_name,
-        evict_submit_rx,
-        evict_query_rx,
-        evict_shutdown_ch,
+        persist_submit_rx,
+        persist_query_rx,
+        persist_shutdown_ch,
         cache.clone(),
-        lru_m.clone(),
+     //   lru_m.clone(),
     );
 
     // ================================
@@ -268,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // =======================================================
     // 6. MySQL query: load all parent node edges into memory (TODO: batch query)
     // =======================================================
-    println!("About to SQL 2");
+    println!("About to SQL");
     let mut parent_edges: HashMap<Puid, HashMap<SortK, Vec<Cuid>>> = HashMap::new();
     let child_edge = "Select puid,sortk,cuid from test_childedge order by puid,sortk"
         .with(())
@@ -297,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             }
         })
         .await?;
-    println!("About to SQL 2 - DONE");
+    println!("About to SQL - DONE");
     // ===========================================
     // 7. Setup asynchronous tasks infrastructure
     // ===========================================
@@ -312,7 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // 9. process each parent_node and its associated edges (child nodes) in parallel
     // ===============================================================================
     for puid in parent_node {
-        println!("puid {}",puid);
+        //println!("puid {}",puid);
         // if puid.to_string() != "0eb40290-da22-4619-91d2-80e708eb4abb" {//"0abc72f2-79c2-4af5-b7f4-38eefb77618d" {// 5d14c8b4-43e4-4a6b-8f0a-5cd7f1c2d9b3" { // || puid.to_string() = { // a Peter Sellers Performance node 8ce42327-0183-4632-9ba8-065808909144
         //     continue
         // }
@@ -335,9 +334,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         let node_types = node_types.clone(); // Arc instance - single cache in heap storage
         let lru: Arc<tokio::sync::Mutex<lru::LRUevict>> = lru_m.clone();
         let cache= cache.clone();
-        let evict_query_ch = evict_query_ch_p.clone();
+        let persist_query_ch = persist_query_ch_p.clone();
 
         tasks += 1; // concurrent task counter
+        task+=1;
+        if task > MAX_SP_TASKS {
+            task=1;
+        }
         // =========================================
         // 9.2 spawn tokio task for each parent node
         // =========================================
@@ -345,7 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             // ============================================
             // 9.2.3 propagate child scalar data to parent
             // ============================================
-
+            println!("********************** TASK {} ******************************",task);
             for (p_sk_edge, children) in p_sk_edges {
             
                 // Container for Overflow Block Uuids, also stores all propagated data.
@@ -568,6 +571,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 // 9.2.3 persist parent nodes propagated data to database
                 // ======================================================
                 persist(
+                    task,
                     &dyn_client,
                     table_name,
                     lru.clone(),
@@ -579,7 +583,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     &retry_ch,
                     ovb_pk,
                     items,
-                    evict_query_ch.clone(),
+                    persist_query_ch.clone(),
                 )
                 .await;
 
@@ -613,34 +617,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ==========================================================================
     // Persist all nodes in the LRU cache by submiting them to the Evict service
     // ==========================================================================
-    let lru_guard = lru_m.lock().await; 
-    let mut entry = lru_guard.head.clone();
-    drop(lru_guard);
-    println!("Shutdown in progress..evict entries in LRU");
-    while let Some(entry_) = entry {
+    // let lru_guard = lru_m.lock().await; 
+    // let mut entry = lru_guard.head.clone();
+    // drop(lru_guard);
+    // println!("Shutdown in progress..persist entries in LRU");
+    // while let Some(entry_) = entry {
         
-            let rkey = entry_.lock().await.key.clone();
-            println!("Main: evict {:?}",rkey);
-            if let Err(err) = evict_submit_ch_p 
-                        .send(rkey)
-                        .await {
-                            panic!("Error on evict_submit_ch channel [{}]",err);
-                        }
+    //         let rkey = entry_.lock().await.key.clone();
+    //         println!("Main: persist {:?}",rkey);
+    //         if let Err(err) = persist_submit_ch_p 
+    //                     .send(rkey)
+    //                     .await {
+    //                         panic!("Error on persist_submit_ch channel [{}]",err);
+    //                     }
 
-            entry = entry_.lock().await.next.clone();      
-    }
+    //         entry = entry_.lock().await.next.clone();      
+    // }
     //sleep(Duration::from_millis(2000)).await;
     // ==============================
     // Shutdown support services
     // ==============================
     shutdown_broadcast_sender.send(0);
     retry_service.await;
-    evict_service.await;
+    persist_service.await;
 
     Ok(())
 }
 
 async fn persist(
+    task: usize, 
     dyn_client: &DynamoClient,
     table_name: &str,
     //
@@ -657,12 +662,12 @@ async fn persist(
     ovb_pk: HashMap<String, Vec<Uuid>>,
     items: HashMap<SortK, Operation>,
     //
-    evict_query_ch: tokio::sync::mpsc::Sender<QueryMsg>,
+    persist_query_ch: tokio::sync::mpsc::Sender<QueryMsg>,
 ) {
     // create channels to communicate (to and from) lru eviction service
     // evict_resp_ch: sender - passed to eviction service so it can send its response back to this routine
     // evict_recv_ch: receiver - used by this routine to receive respone from eviction service
-    let (evict_client_send_ch, mut evict_srv_resp_ch) = tokio::sync::mpsc::channel::<bool>(1);
+    let (persist_client_send_ch, mut persist_srv_resp_ch) = tokio::sync::mpsc::channel::<bool>(1);
 
     // persist to database
     for (sk, v) in items {
@@ -757,13 +762,14 @@ async fn persist(
                         
                         let rkey = RKey::new(child.clone(), reverse_sk.clone());
                         rkey.add_reverse_edge(
-                            dyn_client
+                            task
+                            , dyn_client
                             , table_name
                             , lru.clone()
                             , cache.clone()
-                            , evict_query_ch.clone()
-                            , evict_client_send_ch.clone()
-                            , &mut evict_srv_resp_ch
+                            , persist_query_ch.clone()
+                            , persist_client_send_ch.clone()
+                            , &mut persist_srv_resp_ch
                             , &target_uid
                             , 0
                             , id)
@@ -876,13 +882,14 @@ async fn persist(
                                 let rkey = RKey::new(child.clone(), reverse_sk.clone());
                                 
                                 rkey.add_reverse_edge(
-                                    dyn_client
+                                    task
+                                    , dyn_client
                                     , table_name
                                     , lru.clone()
                                     , cache.clone()
-                                    , evict_query_ch.clone()
-                                    , evict_client_send_ch.clone()
-                                    , &mut evict_srv_resp_ch
+                                    , persist_query_ch.clone()
+                                    , persist_client_send_ch.clone()
+                                    , &mut persist_srv_resp_ch
                                     , &ovb
                                     , bid
                                     , id)
@@ -983,13 +990,14 @@ async fn persist(
                                 // alternatively, manage addition of reverse edges via a "service" or separate load process.
                                 let rkey = RKey::new(child.clone(), reverse_sk.clone());
                                 rkey.add_reverse_edge(
-                                    dyn_client
+                                    task
+                                    , dyn_client
                                     , table_name
                                     , lru.clone()
                                     , cache.clone()
-                                    , evict_query_ch.clone()
-                                    , evict_client_send_ch.clone()
-                                    , &mut evict_srv_resp_ch
+                                    , persist_query_ch.clone()
+                                    , persist_client_send_ch.clone()
+                                    , &mut persist_srv_resp_ch
                                     , &ovb
                                     , bid
                                     , id)

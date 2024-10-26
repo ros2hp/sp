@@ -16,15 +16,16 @@ impl RKey {
     }
 
     pub async fn add_reverse_edge(&self
+                            ,task : usize
                             ,dyn_client: &DynamoClient
                             ,table_name: &str
                             //
                             ,lru : Arc<tokio::sync::Mutex<lru::LRUevict>>
                             ,cache: Arc<tokio::sync::Mutex<ReverseCache>>
                             //
-                            ,evict_query_ch: tokio::sync::mpsc::Sender<QueryMsg>
-                            ,evict_client_send_ch: tokio::sync::mpsc::Sender<bool>
-                            ,evict_srv_resp_ch: &mut tokio::sync::mpsc::Receiver<bool> 
+                            ,persist_query_ch: tokio::sync::mpsc::Sender<QueryMsg>
+                            ,persist_client_send_ch: tokio::sync::mpsc::Sender<bool>
+                            ,persist_srv_resp_ch: &mut tokio::sync::mpsc::Receiver<bool> 
                             //
                             ,target : &Uuid
                             ,bid: usize
@@ -32,137 +33,93 @@ impl RKey {
     ) {
     
         println!("** RKEY add_reverse_edge:  rkey={:?} about to lock cache",self);
-        let cache_guard = cache.lock().await;
+        let mut cache_guard = cache.lock().await;
         
         match cache_guard.0.get(&self) {
-        
+            
             None => {
-                println!("RKEY add_reverse_edge: - match None: rkey {:?}",self);
-                drop(cache_guard);      
-                // not in cache but maybe persisting - ask the Evict Service as its responsible
-                // for for evicting nodes from the cache and persisting to the database.
-                // if the evicted noded is waiting in the Evict queue then the Evict service will
-                // remove dequeue the entry. Node is still in the cache at this point.
-                println!("rkEY add_reverse_edge: - query Evict for persisting status");
-                if let Err(e) = evict_query_ch
-                  .send(QueryMsg::new(self.clone(), evict_client_send_ch.clone()))
-                  .await
+                println!("{}  - RKEY add_reverse_edge: - Not Cached: rkey {:?}", task, self);
+                
+                // grab lock on RNode and release cache lock - this prevents concurrent updates to RNode 
+                // and optimises cache concurrency by releasing lock asap
+                let mut arc_rnode = RNode::new_with_key(self);
+                // add to cache and release lock 
+                cache_guard.0.insert(self.clone(), arc_rnode.clone());
+                let mut rnode_guard = arc_rnode.lock().await;
+                drop(cache_guard);
+                // ==================================================================
+                // HAS NODE BEING EVICTED ... wait here for PERSIST task to complete
+                // ==================================================================
                 {
-                    panic!("evict channel comm failed = {}", e);
+
+                    let mut lru_guard= lru.lock().await;
+                    if let Some(_) = lru_guard.evicted.get(self) {
+                        // wait for evict service to give go ahead...(completed persisting)
+                        // or ack that it completed already.
+                        if let Err(e) = persist_query_ch
+                                        .send(QueryMsg::new(self.clone(), persist_client_send_ch.clone()))
+                                         .await
+                                        {
+                                            panic!("evict channel comm failed = {}", e);
+                                        }
+                        // wait for persist to complete
+                        println!("{} - RKEY add_reverse_edge: not cached - was EVICTED previously, waiting on Persist for {:?}", task, self);
+                        
+                        let persist_resp = match persist_srv_resp_ch.recv().await {
+                              Some(resp) => resp,
+                              None => {
+                                  panic!("communication with evict service failed")
+                              }
+                            };
+                        println!("{} - RKEY add_reverse_edge: not cached - FINISHED waiting - recv ACK from PERSIT", task);
+                        // remove evicted status
+                        lru_guard.evicted.remove(self);
+                        // true is node is persisting
+                        if persist_resp {
+                            drop(lru_guard);
+                            // wait for completion msg from Persist
+                            persist_srv_resp_ch.recv().await;
+                            println!("{}  - RKEY add_reverse_edge: wait for persist DONE...  {:?}", task, self);
+                        }
+                    }
                 }
-                // Evict Service respsonds with True if the evicted node is persisting otherwise False.
-                println!("rkEY add_reverse_edge: - wait for query Evict for persisting status");
-                let evict_resp = match evict_srv_resp_ch.recv().await {
-                  Some(resp) => resp,
-                  None => {
-                      panic!("communication with evict service failed")
-                  }
-                };
-                // If persisting then wait for Ack from Evict service that persisting has completed.
-                println!("rkEY add_reverse_edge: - wait for query Evict for persisting status DONE - {}",evict_resp);
-                if evict_resp {
-                    println!("rkEY add_reverse_edge: - wait for persisting to complete");          
-                    // wait for evict to persist node
-                    evict_srv_resp_ch.recv().await;
-                } 
                 // as the node is not cached we must create one and populate from the database
-                println!("RKEY: not cached then create a new one");
-                let mut rnode = RNode::new_with_key(self);
-                rnode.load_from_db(dyn_client, table_name, self).await;
-                rnode.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                // now add to cache
-                {
-                    println!("rkEY add_reverse_edge: - match None: about to lock cache");
-                    let mut cache_guard = cache.lock().await;
-                    println!("rkEY add_reverse_edge: - match None: cache locked");
-                    cache_guard.0.insert(self.clone(), Arc::new(tokio::sync::Mutex::new(rnode)));
-                }  
+                println!("{}  - RKEY: not cached then create a new one",task);
+
+                rnode_guard.load_from_db(dyn_client, table_name, self).await;
+                rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
                 // and attach to LRU (which handle the evictions)
-                println!("rkEY add_reverse_edge: - match None: about to lock LRU");
+                println!("{} - RkEY add_reverse_edge: - not caChed: about to lock LRU", task);
                 let mut lru_guard= lru.lock().await;
-                println!("rkEY add_reverse_edge: - match None: about to lru-attach...{:?}",self);
-                lru_guard.attach(self.clone()).await;
-                println!("rkEY add_reverse_edge: - match None: about to lru-attach...{:?}....DONE",self);                
+                println!("{} - RkEY add_reverse_edge: - not caChed: about to lru-attach...{:?}", task, self);
+                lru_guard.attach(task, self.clone(), cache.clone()).await;
+                println!("{} - RkEY add_reverse_edge: - not cached exit {:?}", task, self);                
             }
             
             Some(rnode_) => {
 
-                let rnode=rnode_.clone();
+                // grab lock on RNode and release cache lock - this prevents concurrent updates to RNode 
+                // and optimises cache concurrency by releasing lock asap
+                let arc_rnode=rnode_.clone();
                 drop(cache_guard);
-                // mark the LRU entry as immune to eviction
-                {   // LRU may have to be a service as we want sync immunity with LRU operations
-                    let mut lru_guard= lru.lock().await;
-                    lru_guard.set_immunity(self.clone()); 
-                }
-                println!("rkEY add_reverse_edge: - match RNODE about to send on evict_query_ch {:?}",self); 
-                // cached but maybe queued for Eviction - ask the Evict Service.
-                if let Err(e) = evict_query_ch
-                  .send(QueryMsg::new(self.clone(), evict_client_send_ch.clone()))
-                  .await
-                {
-                    panic!("evict channel comm failed = {}", e);
-                }
-                println!("rkEY add_reverse_edge: - match RNODE about to rcv on evict_srv_resp_ch");
-                // Evict Service will respond with either
-                // False - not queued for eviction or persisting.
-                // True - currently being persisted to db
-                let evict_resp = match evict_srv_resp_ch.recv().await {
-                  Some(resp) => resp,
-                  None => {
-                      panic!("communication with evict service failed")
-                  }
-                };
-                println!("rkEY add_reverse_edge: - match RNODE got resp [{}] on evict_srv_resp_ch",evict_resp);
-                if evict_resp {
-                    // node being evicted and cannot be aborted as currently persisting.
-                    println!("RKEY add_reverse_edge: - match RNODE: about to wait on evict_srv_resp_ch");
-                    
-                    evict_srv_resp_ch.recv().await;
-                    
-                    // create a fresh node and populate from db
-                    println!("rkEY add_reverse_edge: - match RNODE: false make rnode");
-                    let mut rnode = RNode::new_with_key(self);
-                    println!("rkEY add_reverse_edge: - match RNODE: false about to load_from_db..");
-                    rnode.load_from_db(dyn_client, table_name, self).await;        
-                    println!("rkEY add_reverse_edge: - match RNODE: false about to add_reverse_edge...");
-                    rnode.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                    
-                    // insert into LRU and cache
-                    {
-                        println!("rkEY add_reverse_edge: - match RNODE: false cache lock freed about to lock lru");
-                        let mut lru_guard= lru.lock().await;
-                        lru_guard.attach(self.clone()).await; 
-                        lru_guard.unset_immunity(&self); 
-                    }
-                    {
-                        println!("rkEY add_reverse_edge: - match RNODE: false about to lock cache");
-                        let mut cache_guard = cache.lock().await;
-                        println!("rkEY add_reverse_edge: - match RNODE: cache locked");
-                        cache_guard.0.insert(self.clone(), Arc::new(tokio::sync::Mutex::new(rnode)));
-                    }   
+                // prevent concurrent operations on node
+                let mut rnode_guard = arc_rnode.lock().await;
                 
-                } else {
+                // mark the LRU entry as immune to eviction
+                // LRU may have to be a service as we want sync immunity with LRU operations
+                let mut lru_guard= lru.lock().await;
+                lru_guard.set_inuse(self.clone()); 
+                          
+                println!("{} - RkEY add_reverse_edge: - in cache: true about add_reverse_edge {:?}", task, self);    
+                rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
 
-                    {
-                        println!("rkEY add_reverse_edge: - match RNODE: about to cache.lock()");
-                        let cache_guard = cache.lock().await;
-                        println!("rkEY add_reverse_edge: - match RNODE: about to cache.lock() - DONE, rnode.lock()...");
-                        let mut rnode_guard = rnode.lock().await;
-                        println!("rkEY add_reverse_edge: - match RNODE: true about add_reverse_edge");
-                        rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                        println!("rkEY add_reverse_edge: - match RNODE: rue about add_reverse_edge - DONE");
-                    }
-                    println!("rkEY add_reverse_edge: - match RNODE: true about to lock lru");
-                    let mut lru_guard = lru.lock().await;
-                    println!("rkEY add_reverse_edge: - match RNODE: about to lru_guard move_to_head....");
-                    lru_guard.move_to_head(self.clone()).await;
-                    println!("rkEY add_reverse_edge: - match RNODE: about to lru_guard move_to_head....DONE");
-                    lru_guard.unset_immunity(&self); 
-                }
-                println!("rkEY add_reverse_edge: - match RNODE: true - about to release inner locks");
+                println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....{:?}", task, self);    
+                lru_guard.move_to_head(task, self.clone()).await;
+                println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....DONE {:?}", task, self);    
+                lru_guard.unset_inuse(&self); 
+                println!("{} - RkEY add_reverse_edge: exit {:?}", task, self);  
             }
-
         }
-        println!("rkEY add_reverse_edge: - release cache lock");
     }
 }
+

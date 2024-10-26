@@ -5,7 +5,6 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use uuid::Uuid;
 
-
 #[derive(Clone)]
 pub struct RNode {
     pub node: Uuid,     // child or associated OvB Uuid
@@ -32,7 +31,6 @@ impl RNode {
             node: Uuid::nil(),
             rvs_sk: String::new(), //
             init_cnt: 0,           // edge cnt at initialisation (e.g as read from database)
-                                   //
             target_uid: vec![],
             target_bid: vec![],
             target_id: vec![], //
@@ -45,11 +43,11 @@ impl RNode {
         }
     }
 
-    pub fn new_with_key(rkey: &RKey) -> RNode {
-        RNode {
+    pub fn new_with_key(rkey: &RKey) -> Arc<Mutex<RNode>> {
+        Arc::new(Mutex::new(RNode{
             node: rkey.0.clone(),
             rvs_sk: rkey.1.clone(), //
-            init_cnt: 0,            //
+            init_cnt: 0,
             target_uid: vec![],     // target_uid.len() total edges added in current sp session
             target_bid: vec![],
             target_id: vec![], //
@@ -59,7 +57,7 @@ impl RNode {
             obid: vec![],
             oid: vec![],
             ocur: None, //
-        }
+        }))
     }
 
     pub async fn load_from_db(

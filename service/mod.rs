@@ -1,2 +1,2 @@
-pub mod evict;
+pub mod persist;
 pub mod retry;
