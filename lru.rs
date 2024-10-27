@@ -40,10 +40,10 @@ pub struct LRUevict {
     cnt : usize,
     // pointer to Entry value in the LRU linked list for a RKey
     lookup : HashMap<RKey,Arc<Mutex<Entry>>>,
-    // when an rkey is registered in inuse it will not be evicted.
+    // when an rkey is registered in inuse it will not be evict.
     inuse : HashSet<RKey>,
-    // evicted - holds state of eviction for evict RKey until persist is complete
-    pub evicted : HashSet<RKey>,
+    // evict - holds state of eviction for evict RKey until persist is complete
+    pub evict : HashSet<RKey>,
     //
     persist_submit_ch: tokio::sync::mpsc::Sender<(RKey, Arc<Mutex<RNode>>)>,
     //
@@ -80,7 +80,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             cnt: 0,
             lookup: HashMap::new(),
             inuse: HashSet::new(),
-            evicted:  HashSet::new(),
+            evict:  HashSet::new(),
             persist_submit_ch: ch,
             head: None,
             tail: None,
@@ -134,10 +134,11 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             println!("{}  LRU: attach reached LRU capacity - evict tail", task);
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
+
             let lru_evict_entry = self.tail.as_ref().unwrap().clone();
             let mut evict_entry = lru_evict_entry.lock().await;
-            
-            println!("{}  LRU: attach  tail entry about to be evicted  {:?}",task, evict_entry.key); 
+            self.evict.insert(evict_entry.key.clone());   
+            println!("{}  LRU: attach  tail entry about to be evict  {:?}",task, evict_entry.key); 
             // ===========================================================
             // check if tail entry is in use (set in RKEY) - otherwise ignore evict 
             // ===========================================================            
@@ -189,8 +190,9 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
                         println!("Error sending on Evict channel: [{}]", err);
                     }
                 //
-                self.evicted.insert(evict_entry.key.clone());
                 self.lookup.remove(&evict_entry.key);
+            } else {
+                self.evict.remove(&evict_entry.key);
             }
         } 
         // ======================

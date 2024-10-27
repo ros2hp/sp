@@ -51,9 +51,9 @@ impl RKey {
                 // HAS NODE BEING EVICTED ... wait here for PERSIST task to complete
                 // ==================================================================
                 {
-
+                    // must wait for the evict-persist process to complete - setup comms with persist.
                     let mut lru_guard= lru.lock().await;
-                    if let Some(_) = lru_guard.evicted.get(self) {
+                    if let Some(_) = lru_guard.evict.get(self) {
                         // wait for evict service to give go ahead...(completed persisting)
                         // or ack that it completed already.
                         if let Err(e) = persist_query_ch
@@ -71,29 +71,29 @@ impl RKey {
                                   panic!("communication with evict service failed")
                               }
                             };
-                        println!("{} - RKEY add_reverse_edge: not cached - FINISHED waiting - recv ACK from PERSIT", task);
-                        // remove evicted status
-                        lru_guard.evicted.remove(self);
+                        //println!("{} - RKEY add_reverse_edge: not cached - FINISHED waiting - recv ACK from PERSIT", task);
+                        // remove evict status
+                        lru_guard.evict.remove(self);
                         // true is node is persisting
                         if persist_resp {
                             drop(lru_guard);
+
+                            // ====================================
                             // wait for completion msg from Persist
+                            // ====================================
                             persist_srv_resp_ch.recv().await;
-                            println!("{}  - RKEY add_reverse_edge: wait for persist DONE...  {:?}", task, self);
                         }
                     }
                 }
-                // as the node is not cached we must create one and populate from the database
-                println!("{}  - RKEY: not cached then create a new one",task);
 
-                rnode_guard.load_from_db(dyn_client, table_name, self).await;
+                rnode_guard.load_OvB_metadata_from_db(dyn_client, table_name, self).await;
                 rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
                 // and attach to LRU (which handle the evictions)
-                println!("{} - RkEY add_reverse_edge: - not caChed: about to lock LRU", task);
+                //println!("{} - RkEY add_reverse_edge: - not caChed: about to lock LRU", task);
                 let mut lru_guard= lru.lock().await;
-                println!("{} - RkEY add_reverse_edge: - not caChed: about to lru-attach...{:?}", task, self);
+                //println!("{} - RkEY add_reverse_edge: - not caChed: about to lru-attach...{:?}", task, self);
                 lru_guard.attach(task, self.clone(), cache.clone()).await;
-                println!("{} - RkEY add_reverse_edge: - not cached exit {:?}", task, self);                
+                //println!("{} - RkEY add_reverse_edge: - not cached exit {:?}", task, self);                
             }
             
             Some(rnode_) => {
@@ -108,11 +108,9 @@ impl RKey {
                 // mark the LRU entry as immune to eviction
                 // LRU may have to be a service as we want sync immunity with LRU operations
                 let mut lru_guard= lru.lock().await;
-                lru_guard.set_inuse(self.clone()); 
-                          
+                lru_guard.set_inuse(self.clone());                          
                 println!("{} - RkEY add_reverse_edge: - in cache: true about add_reverse_edge {:?}", task, self);    
                 rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
-
                 println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....{:?}", task, self);    
                 lru_guard.move_to_head(task, self.clone()).await;
                 println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....DONE {:?}", task, self);    

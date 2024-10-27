@@ -39,11 +39,6 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Instant};
 //use tokio::task::spawn;
 
-const CHILD_UID: u8 = 1;
-const _UID_DETACHED: u8 = 3; // soft delete. Child detached from parent.
-const OV_BLOCK_UID: u8 = 4; // this entry represents an overflow block. Current batch id contained in Id.
-const OV_BATCH_MAX_SIZE: u8 = 5; // overflow batch reached max entries - stop using. Will force creating of new overflow block or a new batch.
-const _EDGE_FILTERED: u8 = 6; // set to true when edge fails GQL uid-pred  filter
 const DYNAMO_BATCH_SIZE: usize = 25;
 const MAX_SP_TASKS : usize = 4;
 const LRU_CAPACITY : usize = 40;

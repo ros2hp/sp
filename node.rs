@@ -34,6 +34,7 @@ impl RNode {
             target_uid: vec![],
             target_bid: vec![],
             target_id: vec![], //
+            //
             ovb: vec![],
             obid: vec![],
             //oblen: vec![],
@@ -51,6 +52,7 @@ impl RNode {
             target_uid: vec![],     // target_uid.len() total edges added in current sp session
             target_bid: vec![],
             target_id: vec![], //
+            //
             ovb: vec![],
             obcnt:0,
             //oblen: vec![],
@@ -60,13 +62,18 @@ impl RNode {
         }))
     }
 
-    pub async fn load_from_db(
+    pub async fn load_OvB_metadata_from_db(
         &mut self,
         dyn_client: &DynamoClient,
         table_name: &str,
         rkey: &RKey,
     ) {
-        let projection =  types::OVB.to_string() + "," + types::OVB_BID + "," + types::OVB_ID + "," + types::OVB_CUR;
+        let projection =  types::CNT.to_string() 
+                          + "," + types::OVB
+                          + "," + types::OVB_BID 
+                          + "," + types::OVB_ID 
+                          + "," + types::OVB_CUR 
+                          + "," + types::OVB_CNT;
         let result = dyn_client
             .get_item()
             .table_name(table_name)
@@ -99,6 +106,10 @@ impl RNode {
         //self.oblen = ri.oblen; 
         self.oid = ri.oid;
         self.ocur = ri.ocur;
+        
+        if self.ovb.len() > 0 {
+            println!("load_from_db: ovb.len {}. for {:?}",self.ovb.len(), rkey);
+        }
     }
 
     pub fn add_reverse_edge(&mut self, target_uid: Uuid, target_bid: u32, target_id: u32) {
@@ -147,6 +158,7 @@ impl From<HashMap<String, AttributeValue>> for RNode {
                 ),
             }
         }
+        //println!("NODE....ovb.len {}  oid len {}  init_cnt {} ocur {:?} for {:?}",edge.ovb.len(), edge.obid.len(), edge.init_cnt, edge.ocur, edge.node);
         edge
     }
 }

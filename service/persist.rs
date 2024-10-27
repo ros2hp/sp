@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 
 use uuid::Uuid;
 
-const MAX_EVICT_TASKS: u8 = 20;
+const MAX_PRESIST_TASKS: u8 = 20;
 
 struct Lookup(HashMap<RKey, Arc<Mutex<RNode>>>);
 
@@ -104,7 +104,7 @@ pub fn start_service(
 
     // evict channel used to acknowledge to a waiting client that the associated node has completed eviction.
     let (evict_completed_send_ch, mut evict_completed_rx) =
-        tokio::sync::mpsc::channel::<RKey>(MAX_EVICT_TASKS as usize);
+        tokio::sync::mpsc::channel::<RKey>(MAX_PRESIST_TASKS as usize);
 
     //let backoff_queue : VecDeque = VecDeque::new();
     let dyn_client = dynamo_client.clone();
@@ -125,9 +125,9 @@ pub fn start_service(
 
                     //  no locks acquired  - apart from Cache in async routine, which is therefore safe.
 
-                        println!("PERSIST: submit evict for {:?} tasks [{}]",rkey, tasks);
+                        //println!("PERSIST: submit evict for {:?} tasks [{}]",rkey, tasks);
     
-                        if tasks >= MAX_EVICT_TASKS {
+                        if tasks >= MAX_PRESIST_TASKS {
                         
                             pendingQ.0.push_front(rkey.clone());
                             {
@@ -145,7 +145,7 @@ pub fn start_service(
                             let cache_= cache.clone();
                             tasks+=1;
     
-                            println!("PERSIST: ASYNC call to persist_rnode tasks {}",tasks);
+                            //println!("PERSIST: ASYNC call to persist_rnode tasks {}",tasks);
                             tokio::spawn(async move {
     
                                 // save Node data to db
@@ -166,7 +166,7 @@ pub fn start_service(
                     //  cache locks acquired to evict from cache - async to main
                     tasks-=1;
                     
-                    println!("PERSIST: completed msg: tasks {}",tasks);
+                    //println!("PERSIST: completed msg: tasks {}",tasks);
                     // remove from Pending Queue
                     pendingQ.remove(&evict_rkey);
                     {
@@ -175,9 +175,9 @@ pub fn start_service(
                     persisting.0.remove(&evict_rkey);
 
                     // send ack to client if one is waiting on query channel
-                    println!("PERSIST: send complete persist ACK to client - if registered. {:?}",evict_rkey);
+                    //println!("PERSIST: send complete persist ACK to client - if registered. {:?}",evict_rkey);
                     if let Some(client_ch) = query_client.0.get(&evict_rkey) {
-                        println!("PERSIST:   Yes.. ABOUT to send ACK to query that evict completed ");
+                        //println!("PERSIST:   Yes.. ABOUT to send ACK to query that evict completed ");
                         // send ack of completed eviction to waiting client
                         if let Err(err) = client_ch.send(true).await {
                             panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
@@ -189,12 +189,12 @@ pub fn start_service(
                     //println!("EVIct: is client waiting..- DONE ");
                     // // process next node in evict Pending Queue
                     if let Some(arc_node) = pendingQ.0.pop_back() {
-                                        println!("PERSIST: persist next entry in pendingQ....");
+                                        //println!("PERSIST: persist next entry in pendingQ....");
                                         // spawn async task to persist node
                                         let dyn_client_ = dyn_client.clone();
                                         let tbl_name_ = tbl_name.clone();
                                         let evict_complete_send_ch_=evict_completed_send_ch.clone();
-                                        let Some(arc_node_) = lookup.0.get(&evict_rkey) else {panic!("Evict service: expected arc_node in Lookup")};
+                                        let Some(arc_node_) = lookup.0.get(&evict_rkey) else {panic!("Persist service: expected arc_node in Lookup")};
                                         let arc_node=arc_node_.clone();
                                         tasks+=1;
 
@@ -210,7 +210,7 @@ pub fn start_service(
                                                 ).await;
                                         });
                     }
-                    println!("PERSIST: complete task exit");
+                    //println!("PERSIST: complete task exit");
                 },
 
                 Some(query_msg) = client_query_rx.recv() => {
@@ -218,30 +218,30 @@ pub fn start_service(
                      // no locks acquired - may asynchronously acquire cache lock - safe.
 
                     // ACK to client whether node is currently persisting
-                    println!("PERSIST: client query for {:?}",query_msg.0);
+                    //println!("PERSIST: client query for {:?}",query_msg.0);
                     if let Some(_) = persisting.0.get(&query_msg.0) {
                         // register for notification of persist completion.
                         query_client.0.insert(query_msg.0.clone(), query_msg.1.clone());
                         // send ACK (true) to client 
-                        println!("PERSIST: send ACK (true) to client {:?}",query_msg.0);
+                        //println!("PERSIST: send ACK (true) to client {:?}",query_msg.0);
                         if let Err(err) = query_msg.1.send(true).await {
                             panic!("Error in sending query_msg [{}]",err)
                         };
                         
                     } else {
-                        println!("PERSIST: send ACK (false) to client {:?}",query_msg.0);
+                        //println!("PERSIST: send ACK (false) to client {:?}",query_msg.0);
                         // send ACK (false) to client 
                         if let Err(err) = query_msg.1.send(false).await {
                             panic!("Error in sending query_msg [{}]",err)
                         };                
                     }
 
-                    println!("PERSIST:  client_query exit {:?}",query_msg.0);
+                    //println!("PERSIST:  client_query exit {:?}",query_msg.0);
                 },
 
 
                 _ = shutdown_ch.recv(), if tasks == 0 => {
-                        //println!("PERSIST Shutdown of evict service started. Waiting for remaining evict tasks [{}]to complete...",tasks);
+                        ////println!("PERSIST Shutdown of evict service started. Waiting for remaining evict tasks [{}]to complete...",tasks);
                         while tasks > 0 {
                             //println!("...waiting on {} tasks",tasks);
                             let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};
@@ -276,23 +276,29 @@ async fn persist_rnode(
     // use db cache values to decide nature of updates to db
     // Note for LIST_APPEND Dynamodb will scan the entire attribute value before appending, so List should be relatively small < 10000.
 
-    //println!( "EVICT Persit started ....rkey = {:?}", rkey);
+    //println!( "PRESIST Persit started ....rkey = {:?}", rkey);
     
     let table_name: String = table_name_.into();
     let mut target_uid: Vec<AttributeValue>;
     let mut target_bid: Vec<AttributeValue>;
     let mut target_id: Vec<AttributeValue>;
     let mut update_expression: &str;
-
+    
     let mut node = arc_node.lock().await;
     let rkey = RKey::new(node.node, node.rvs_sk.clone());
+        
+    println!("PERSIST enter ovb.len. {}. rkey {:?}",node.ovb.len(), rkey);
+    
+
          
     let init_cnt = node.init_cnt as usize;
     let edge_cnt = node.target_uid.len() + init_cnt;
     
+    println!("PERSIST edge_cnt : {}, node.target_uid.len() {}, init_cnt {} rkey {:?}",edge_cnt,node.target_uid.len(),init_cnt, rkey);
+    
     if init_cnt <= crate::EMBEDDED_CHILD_NODES {
     
-        println!("PERSIST PERSIST..init_cnt < EMBEDDED.");
+        println!("PERSIST ..init_cnt < EMBEDDED.");
     
         if node.target_uid.len() <= crate::EMBEDDED_CHILD_NODES - init_cnt {
             // consume all of node.target*
@@ -319,9 +325,9 @@ async fn persist_rnode(
             update_expression = "SET #target=LIST_APPEND(#target, :tuid), #id=LIST_APPEND(#id,:id), #cnt = #cnt+:cnt";
         }
         
-        //println!("PERSIST PERSIST...upd expression [{}]",update_expression);
+        println!("PERSIST PERSIST...upd expression [{}]",update_expression);
         
-        // update edge item
+        //update edge_item
         let result = dyn_client
             .update_item()
             .table_name(table_name.clone())
@@ -345,7 +351,7 @@ async fn persist_rnode(
         handle_result(result);
     }
 
-    //println!("PERSIST PERSIT node.target_uid.len() {}",node.target_uid.len());
+    ////println!("PERSIST PERSIT node.target_uid.len() {}",node.target_uid.len());
     // consume the target_* fields by moving them into overflow batches and persisting the batch
     // note if node has been loaded from db must drive off ovb meta data which gives state of current 
     // population of overflwo batches
@@ -356,20 +362,29 @@ async fn persist_rnode(
         let mut target_id: Vec<AttributeValue> = vec![];
         let mut sk_w_bid : String;
         
+        
+        
         match node.ocur {
             None => {
                 // create first OvB
+                println!("PERSIST xxxxx node.ovb.len() {} node.ocur NONE",node.ovb.len());
+                println!("PERSIST  node.ovb.push .. 1");
                 node.ovb.push(Uuid::new_v4());
                 node.obid.push(1);
                 node.obcnt=0;
                 node.ocur = Some(node.ovb.len() as u8 - 1);
+                println!("PERSIST node.ocur is NONE set to node.ocur set = node.ovb len {}    node.obid.len {}", node.ovb.len(), node.obid.len());
                 //println!("EVIct: node.ocur {:?} node.obcnt {}, node.obid {} node.ovb {}",node.ocur, node.obcnt, node.obid.len(),node.ovb.len() );
                 continue;
                 }
-            Some(ocur) => {
+            Some(mut ocur) => {
+                println!("PERSIST yyyy node.ovb.len() {} node.ocur {}",node.ovb.len(),ocur );
                 // obcnt is space consumed in current batch of current OvB. 0 if new batch.
                 let obcnt: usize = node.obcnt ;
+                
+                println!("PERSIST: obcnt = {}",obcnt);
 
+                // if space left in current batch consume it...
                 if crate::OV_MAX_BATCH_SIZE - obcnt > 0 {
                 
                     // use remaining space in batch
@@ -393,32 +408,50 @@ async fn persist_rnode(
                     sk_w_bid = rkey.1.clone();
                     sk_w_bid.push('%');
                     sk_w_bid.push_str(&node.obid[ocur as usize].to_string());
-    
-                    update_expression = "SET LIST_APPEND(#target, :tuid), LIST_APPEND(#bid,:bid), LIST_APPEND(#id = id";                  
+                    
+                    println!("PERSIST ocur, node.obid len  {}  {}",ocur, node.obid.len());
+                    if node.obid.len() != node.ovb.len() {
+                        println!("PERSIST: >> len disagree ocur = {} node.ocur {:?}", ocur, node.ocur.unwrap());
+                    }
+                     println!("PERSIST: >> len ocur = {} node.ocur {:?}", ocur, node.ocur.unwrap());
+                    if ocur != (node.ovb.len() - 1) as u8 {
+                        println!("PERSIST: >> len disagree ocur = {} node.ocur {:?}", ocur, node.ocur.unwrap());
+                    } 
+                    
+                    if obcnt == 0 {
+                        // first time 
+                        update_expression = "SET #target = :tuid, #bid=:bid , #id = :id";
+                    } else {       
+                        update_expression = "SET LIST_APPEND(#target, :tuid), LIST_APPEND(#bid,:bid), LIST_APPEND(#id = :id)";  
+                    }
                     
                 } else {
                 
                     // create a new batch optionally in a new OvB
                     if node.ovb.len() < crate::MAX_OV_BLOCKS {
                         // create a new OvB
+                        println!("node.ovb.push .. 2");
                         node.ovb.push(Uuid::new_v4());
                         //node.ovb.push(AttributeValue::B(Blob::new(Uuid::new_v4() as bytes)));
                         node.obid.push(1);
                         node.obcnt = 0;
                         node.ocur = Some(node.ovb.len() as u8 - 1);
+                        println!(" 22 node.ocur {}",node.ocur.unwrap());
                     } else {
-                        let ocur: u8 = node.ocur.unwrap();
+                        //let ocur: u8 = node.ocur.unwrap();
 
                         // pick from existing OvBs (round robin)
-                        if let Some(mut ocur) = node.ocur {
+                        //if let Some(mut ocur) = node.ocur {
                             ocur += 1;
                             if ocur as usize == crate::MAX_OV_BLOCKS {
                                 ocur = 0;
                             }
                             node.ocur = Some(ocur);
-                        } else {
-                            node.ocur = Some(0);
-                        }
+                            
+                            println!(" 33 node.ocur, ocur {}  {}", node.ocur.unwrap(), ocur);
+                        // } else {
+                        //     node.ocur = Some(0);
+                        // }
                         // create new batch
                         node.obid[ocur as usize] += 1;
                         node.obcnt = 0;
@@ -445,12 +478,13 @@ async fn persist_rnode(
                     sk_w_bid.push('%');
                     sk_w_bid.push_str(&node.obid[ocur as usize].to_string());
     
-                    update_expression = "SET #target = :tuid, #bid=:bid, #id = id";
+                    update_expression = "SET #target = :tuid, #bid=:bid, #id = :id";
                 }
                 // ================
                 // add OvB batches
                 // ================
-                //println!("PERSIST PERSIST...upd expression [{}]",update_expression);
+                println!("PERSIST: ..write OvB batch upd [{}] pk {}  sk [{}]",update_expression,node.ovb[node.ocur.unwrap() as usize] , sk_w_bid);
+
                 let result = dyn_client
                     .update_item()
                     .table_name(table_name.clone())
@@ -465,7 +499,7 @@ async fn persist_rnode(
                     // reverse edge
                     .expression_attribute_names("#target", types::TARGET_UID)
                     .expression_attribute_values(":tuid", AttributeValue::L(target_uid))
-                    .expression_attribute_names("#id", types::TARGET_BID)
+                    .expression_attribute_names("#bid", types::TARGET_BID)
                     .expression_attribute_values(":bid", AttributeValue::L(target_bid))
                     .expression_attribute_names("#id", types::TARGET_ID)
                     .expression_attribute_values(":id", AttributeValue::L(target_id))
@@ -478,10 +512,12 @@ async fn persist_rnode(
         }
     } // end while
     
-    println!("PERSIST PERSIT - save metadata...");
+    //println!("PERSIST PERSIT - save metadata...");
       // update OvB meta on edge predicate only if OvB are used.
     if node.ovb.len() > 0 {
-        update_expression = "SET #cnt = :cnt, #ovb = :ovb, #obid = :obid, #ocnt = :ocnt, #ocur = :ocur";
+
+        update_expression = "SET  #cnt = :cnt, #ovb = :ovb, #obid = :obid, #obcnt = :obcnt, #ocur = :ocur";
+        println!("PRESIST Service: OvB metadata only - {} {:?}  {}",update_expression, rkey.0.clone(), rkey.1.clone());
         let cnt = node.ovb.len() + init_cnt as usize;
         let ocur = match node.ocur {
             None => 0,
@@ -494,8 +530,8 @@ async fn persist_rnode(
             .key(types::SK, AttributeValue::S(rkey.1.clone()))
             .update_expression(update_expression)
             // OvB metadata
-            .expression_attribute_names("#cnt", types::CNT)
-            .expression_attribute_values(":cnt", AttributeValue::N(cnt.to_string()))
+             .expression_attribute_names("#cnt", types::CNT)
+            .expression_attribute_values(":cnt", AttributeValue::N(edge_cnt.to_string())) // 
             .expression_attribute_names("#ovb", types::OVB)
             .expression_attribute_values(":ovb", types::uuid_to_av_lb(&node.ovb))
             .expression_attribute_names("#obid", types::OVB_BID)
@@ -509,6 +545,9 @@ async fn persist_rnode(
             .await;
 
         handle_result(result);
+        
+        panic!("ovb update...");
+        
     }
 
     // send task completed msg to evict service
@@ -523,23 +562,25 @@ async fn persist_rnode(
 fn handle_result(result: Result<UpdateItemOutput, SdkError<UpdateItemError, HttpResponse>>) {
     match result {
         Ok(_out) => {
-            println!(" EVICT Service: Persist successful update...")
+            println!("PRESIST Service: Persist successful update...")
         }
         Err(err) => match err {
             SdkError::ConstructionFailure(_cf) => {
-                //println!(" Evict Service: Persist  update error ConstructionFailure...")
+                println!(" Persist Service: Persist  update error ConstructionFailure...")
             }
             SdkError::TimeoutError(_te) => {
-                //println!(" Evict Service: Persist  update.error TimeoutError")
+                println!(" Persist Service: Persist  update error TimeoutError")
             }
             SdkError::DispatchFailure(_df) => {
-                //println!(" Evict Service: Persist  update error...DispatchFailure")
+                println!(" Persist Service: Persist  update error...DispatchFailure")
             }
             SdkError::ResponseError(_re) => {
-                //println!(" Evict Service: Persist  update. error ResponseError")
+                println!(" Persist Service: Persist  update error ResponseError")
             }
             SdkError::ServiceError(_se) => {
-                //println!(" Evict Service: Persist  update. error ServiceError")
+            println!("x Persist Service: Persist  update error ServiceError");
+            println!("y Persist Service: Persist  update error ServiceError");
+                panic!(" Persist Service: Persist  update error ServiceError");
             }
             _ => {}
         },
