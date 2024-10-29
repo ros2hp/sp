@@ -40,7 +40,7 @@ use tokio::time::{sleep, Duration, Instant};
 //use tokio::task::spawn;
 
 const DYNAMO_BATCH_SIZE: usize = 25;
-const MAX_SP_TASKS : usize = 4;
+const MAX_SP_TASKS : usize = 1;
 const LRU_CAPACITY : usize = 40;
 
 const LS: u8 = 1;
@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let mysql_dbname =
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
     let graph = env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
-    let table_name = "RustGraph.dev.5";
+    let table_name = "RustGraph.dev.9";
     // ===========================
     // 2. Create a Dynamodb Client
     // ===========================
@@ -227,8 +227,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         persist_submit_rx,
         persist_query_rx,
         persist_shutdown_ch,
-        cache.clone(),
-     //   lru_m.clone(),
     );
 
     // ================================
@@ -621,7 +619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     //         let rkey = entry_.lock().await.key.clone();
     //         println!("Main: persist {:?}",rkey);
     //         if let Err(err) = persist_submit_ch_p 
-    //                     .send(rkey)
+    //                     .send(rkey)                          TODO: fix missing value in send <(RKey, Arc<Mutex<RNode>>)>
     //                     .await {
     //                         panic!("Error on persist_submit_ch channel [{}]",err);
     //                     }
