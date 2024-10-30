@@ -91,12 +91,8 @@ impl RKey {
                     // load node from database and attach to LRU
                     rnode_guard.load_OvB_metadata_from_db(dyn_client, table_name, self).await;
                     rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                    // and attach to LRU (which handle the evictions)
-                    //println!("{} - RkEY add_reverse_edge: - not caChed: about to lock LRU", task);
                     let mut lru_guard= lru.lock().await;
-                    //println!("{} - RkEY add_reverse_edge: - not caChed: about to lru-attach...{:?}", task, self);
-                    lru_guard.attach(task, self.clone(), cache.clone()).await;
-                    //println!("{} - RkEY add_reverse_edge: - not cached exit {:?}", task, self);                
+                    lru_guard.attach(task, self.clone(), cache.clone()).await;              
                     
                 } else {
                   
@@ -106,12 +102,9 @@ impl RKey {
                     let mut lru_guard= lru.lock().await;
                     //lru_guard.set_inuse(self.clone());                          
                     println!("{} - RkEY add_reverse_edge: - in cache: true about add_reverse_edge {:?}", task, self);    
-                    rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
-                    println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....{:?}", task, self);    
-                    lru_guard.move_to_head(task, self.clone()).await;
-                    println!("{} - RkEY add_reverse_edge: - in cache: about to lru_guard move_to_head....DONE {:?}", task, self);    
+                    rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);   
+                    lru_guard.move_to_head(task, self.clone()).await;  
                     lru_guard.unset_inuse(&self); 
-                    println!("{} - RkEY add_reverse_edge: exit {:?}", task, self);  
                 }
             }
         }

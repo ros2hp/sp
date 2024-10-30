@@ -172,10 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // 2. Print config
     // ===========================
     println!("========== Config ===============  ");
-    println!("Parallel Tasks: {}",MAX_SP_TASKS);
-    println!("LRU Capacity:   {}",LRU_CAPACITY);
-    println!("Table name:     {}",table_name);
-    println!("DateTime :      {:?}",Instant::now());
+    println!("Config: Parallel Tasks: {}",MAX_SP_TASKS);
+    println!("Config: LRU Capacity:   {}",LRU_CAPACITY);
+    println!("Config: Table name:     {}",table_name);
+    println!("Config: DateTime :      {:?}",Instant::now());
     println!("=================================  ");
     // ===========================
     // 2. Create a Dynamodb Client
