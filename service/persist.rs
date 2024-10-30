@@ -44,7 +44,7 @@ impl Persisting {
     }
 }
 
-// Pending eviction queue
+// Pending persistion queue
 struct PendingQ(VecDeque<RKey>);
 
 impl PendingQ {
@@ -69,7 +69,7 @@ impl PendingQ {
     }
 }
 
-//  container for clients querying evict service
+//  container for clients querying persist service
 struct QueryClient(HashMap<RKey, tokio::sync::mpsc::Sender<bool>>);
 
 impl QueryClient {
@@ -92,7 +92,7 @@ pub fn start_service(
     dynamo_client: DynamoClient,
     table_name_: impl Into<String>,
     // channels
-    mut evict_submit_rx: tokio::sync::mpsc::Receiver<(RKey, Arc<Mutex<RNode>>)>,
+    mut persist_submit_rx: tokio::sync::mpsc::Receiver<(RKey, Arc<Mutex<RNode>>)>,
     mut client_query_rx: tokio::sync::mpsc::Receiver<QueryMsg>,
     mut shutdown_ch: tokio::sync::broadcast::Receiver<u8>,
 ) -> task::JoinHandle<()> {
@@ -101,7 +101,7 @@ pub fn start_service(
 
     //let mut start = Instant::now();
 
-    println!("PERSIST  starting evict service: table [{}] ", table_name);
+    println!("PERSIST  starting persist service: table [{}] ", table_name);
 
     let mut persisting = Persisting::new();
     //let mut persisted = Persisted::new(); // temmporary - initialise to zero ovb metadata when first persisted
@@ -110,26 +110,26 @@ pub fn start_service(
     let mut query_client = QueryClient::new();
     let mut tasks = 0;
 
-    // evict channel used to acknowledge to a waiting client that the associated node has completed eviction.
-    let (evict_completed_send_ch, mut evict_completed_rx) =
+    // persist channel used to acknowledge to a waiting client that the associated node has completed persistion.
+    let (persist_completed_send_ch, mut persist_completed_rx) =
         tokio::sync::mpsc::channel::<RKey>(MAX_PRESIST_TASKS as usize);
 
     //let backoff_queue : VecDeque = VecDeque::new();
     let dyn_client = dynamo_client.clone();
     let tbl_name = table_name.clone();
-    // evict service only handles
-    let evict_server = tokio::spawn(async move {
+    // persist service only handles
+    let persist_server = tokio::spawn(async move {
         loop {
-            //let evict_complete_send_ch_=evict_completed_send_ch.clone();
+            //let persist_complete_send_ch_=persist_completed_send_ch.clone();
             tokio::select! {
                 biased;         // removes random number generation - normal processing will determine order so select! can follow it.
                 // note: recv() is cancellable, meaning select! can cancel a recv() without loosing data in the channel.
                 // select! will be forced to cancel recv() if another branch event happens e.g. recv() on shutdown_channel.
-                Some((rkey, arc_node)) = evict_submit_rx.recv() => {
+                Some((rkey, arc_node)) = persist_submit_rx.recv() => {
 
                     //  no locks acquired  - apart from Cache in async routine, which is therefore safe.
 
-                        //println!("PERSIST : submit evict for {:?} tasks [{}]",rkey, tasks);
+                        //println!("PERSIST : submit persist for {:?} tasks [{}]",rkey, tasks);
     
                         if tasks >= MAX_PRESIST_TASKS {
                         
@@ -137,7 +137,7 @@ pub fn start_service(
                             {
                             lookup.0.insert(rkey.clone(), arc_node);
                             }
-                            println!("PERSIST  EVIct: submit - max tasks reached add to pendingQ now {}",pendingQ.0.len())
+                            println!("PERSIST: submit - max tasks reached add to pendingQ now {}",pendingQ.0.len())
     
                         } else {
     
@@ -145,7 +145,7 @@ pub fn start_service(
                             // spawn async task to persist node
                             let dyn_client_ = dyn_client.clone();
                             let tbl_name_ = tbl_name.clone();
-                            let evict_complete_send_ch_=evict_completed_send_ch.clone();
+                            let persist_complete_send_ch_=persist_completed_send_ch.clone();
                             //let persisted_=persisted.clone();
                             tasks+=1;
     
@@ -157,60 +157,60 @@ pub fn start_service(
                                     &dyn_client_
                                     ,tbl_name_
                                     ,arc_node
-                                    ,evict_complete_send_ch_
+                                    ,persist_complete_send_ch_
                                 ).await;
     
                             });
                     }
                 },
 
-                Some(evict_rkey) = evict_completed_rx.recv() => {
+                Some(persist_rkey) = persist_completed_rx.recv() => {
 
                     tasks-=1;
                     
                     //println!("PERSIST : completed msg: tasks {}",tasks);
                     // remove from Pending Queue
-                    pendingQ.remove(&evict_rkey);
+                    pendingQ.remove(&persist_rkey);
                     {
-                    lookup.0.remove(&evict_rkey);
+                    lookup.0.remove(&persist_rkey);
                     }
-                    persisting.0.remove(&evict_rkey);
+                    persisting.0.remove(&persist_rkey);
 
                     // send ack to client if one is waiting on query channel
-                    //println!("PERSIST : send complete persist ACK to client - if registered. {:?}",evict_rkey);
-                    if let Some(client_ch) = query_client.0.get(&evict_rkey) {
-                        //println!("PERSIST :   Yes.. ABOUT to send ACK to query that evict completed ");
-                        // send ack of completed eviction to waiting client
+                    //println!("PERSIST : send complete persist ACK to client - if registered. {:?}",persist_rkey);
+                    if let Some(client_ch) = query_client.0.get(&persist_rkey) {
+                        //println!("PERSIST :   Yes.. ABOUT to send ACK to query that persist completed ");
+                        // send ack of completed persistion to waiting client
                         if let Err(err) = client_ch.send(true).await {
                             panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
                         }
                         //
-                        query_client.0.remove(&evict_rkey);
-                        //println!("PERSIST  EVIct: ABOUT to send ACK to query that evict completed - DONE");
+                        query_client.0.remove(&persist_rkey);
+                        //println!("PERSIST  EVIct: ABOUT to send ACK to query that persist completed - DONE");
                     }
                     //println!("PERSIST  EVIct: is client waiting..- DONE ");
-                    // // process next node in evict Pending Queue
-                    if let Some(arc_node) = pendingQ.0.pop_back() {
-                                        //println!("PERSIST : persist next entry in pendingQ....");
-                                        // spawn async task to persist node
-                                        let dyn_client_ = dyn_client.clone();
-                                        let tbl_name_ = tbl_name.clone();
-                                        let evict_complete_send_ch_=evict_completed_send_ch.clone();
-                                        let Some(arc_node_) = lookup.0.get(&evict_rkey) else {panic!("Persist service: expected arc_node in Lookup")};
-                                        let arc_node=arc_node_.clone();
-                                        //let persisted_=persisted.clone();
-                                        tasks+=1;
+                    // // process next node in persist Pending Queue
+                    if let Some(queued_rkey) = pendingQ.0.pop_back() {
+                        //println!("PERSIST : persist next entry in pendingQ....");
+                        // spawn async task to persist node
+                        let dyn_client_ = dyn_client.clone();
+                        let tbl_name_ = tbl_name.clone();
+                        let persist_complete_send_ch_=persist_completed_send_ch.clone();
+                        let Some(arc_node_) = lookup.0.get(&queued_rkey) else {panic!("Persist service: expected arc_node in Lookup")};
+                        let arc_node=arc_node_.clone();
+                        //let persisted_=persisted.clone();
+                        tasks+=1;
 
-                                        tokio::spawn(async move {
-    
-                                                // save Node data to db
-                                                persist_rnode(
-                                                    &dyn_client_
-                                                    ,tbl_name_
-                                                    ,arc_node.clone()
-                                                    ,evict_complete_send_ch_
-                                                ).await;
-                                        });
+                        tokio::spawn(async move {
+                                println!("PERSIST: start persist task from pendingQ. tasks {}", tasks);
+                                // save Node data to db
+                                persist_rnode(
+                                    &dyn_client_
+                                    ,tbl_name_
+                                    ,arc_node.clone()
+                                    ,persist_complete_send_ch_
+                                ).await;
+                        });
                     }
                     //println!("PERSIST : complete task exit");
                 },
@@ -243,19 +243,42 @@ pub fn start_service(
 
 
                 _ = shutdown_ch.recv(), if tasks == 0 => {
-                        ////println!("PERSIST  Shutdown of evict service started. Waiting for remaining evict tasks [{}]to complete...",tasks);
+                        println!("PERSIST  Shutdown of persist service started. Waiting for remaining persist tasks [{}]to complete...",tasks as usize + pendingQ.0.len());
                         while tasks > 0 {
                             //println!("PERSIST  ...waiting on {} tasks",tasks);
-                            let Some(evict_rkey) = evict_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};
+                            let Some(persist_rkey) = persist_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};
                             tasks-=1;
                             // send to client if one is waiting on query channel. Does not block as buffer size is 1.
-                            if let Some(client_ch) = query_client.0.get(&evict_rkey) {
-                                // send ack of completed eviction to waiting client
+                            if let Some(client_ch) = query_client.0.get(&persist_rkey) {
+                                // send ack of completed persistion to waiting client
                                 if let Err(err) = client_ch.send(true).await {
                                     panic!("Error in sending to waiting client that rkey is evicited [{}]",err)
                                 }
                                 //
-                                query_client.0.remove(&evict_rkey);
+                                query_client.0.remove(&persist_rkey);
+                            }
+                            if let Some(queued_rkey) = pendingQ.0.pop_back() {
+                                //println!("PERSIST : persist next entry in pendingQ....");
+                                // spawn async task to persist node
+                                let dyn_client_ = dyn_client.clone();
+                                let tbl_name_ = tbl_name.clone();
+                                let persist_complete_send_ch_=persist_completed_send_ch.clone();
+                                let Some(arc_node_) = lookup.0.get(&queued_rkey) else {panic!("Persist service: expected arc_node in Lookup")};
+                                let arc_node=arc_node_.clone();
+                                //let persisted_=persisted.clone();
+                                tasks+=1;
+
+                                tokio::spawn(async move {
+
+                                        println!("PERSIST: start persist task from pendingQ. tasks {}", tasks);
+                                        // save Node data to db
+                                        persist_rnode(
+                                            &dyn_client_
+                                            ,tbl_name_
+                                            ,arc_node.clone()
+                                            ,persist_complete_send_ch_
+                                        ).await;
+                                });
                             }
                         }
                         // exit loop
@@ -264,7 +287,7 @@ pub fn start_service(
             }
         } // end-loop
     });
-    evict_server
+    persist_server
 }
 
 
@@ -272,7 +295,7 @@ async fn persist_rnode(
     dyn_client: &DynamoClient,
     table_name_: impl Into<String>,
     arc_node: Arc<tokio::sync::Mutex<RNode>>,
-    evict_completed_send_ch: tokio::sync::mpsc::Sender<RKey>,
+    persist_completed_send_ch: tokio::sync::mpsc::Sender<RKey>,
 ) {
     // at this point, cache is source-of-truth updated with db values if edge exists.
     // use db cache values to decide nature of updates to db
@@ -350,10 +373,10 @@ async fn persist_rnode(
     // note if node has been loaded from db must drive off ovb meta data which gives state of current 
     // population of overflwo batches
 
-    println!("PERSIST  node.target_uid.len()  {}    {:?}",node.target_uid.len(),rkey);
+    //println!("PERSIST  node.target_uid.len()  {}    {:?}",node.target_uid.len(),rkey);
     while node.target_uid.len() > 0 {
 
-        println!("PERSIST  logic target_uid > 0 value {}  {:?}", node.target_uid.len(), rkey );
+        //println!("PERSIST  logic target_uid > 0 value {}  {:?}", node.target_uid.len(), rkey );
     
         let mut target_uid: Vec<AttributeValue> = vec![];
         let mut target_bid: Vec<AttributeValue> = vec![];
@@ -419,7 +442,6 @@ async fn persist_rnode(
                                 ocur = 0;
                         }
                         node.ocur = Some(ocur);
-                            
                         println!("PERSIST   33 node.ocur, ocur {}  {}", node.ocur.unwrap(), ocur);
                         node.obid[ocur as usize] += 1;
                         node.obcnt = 0;
@@ -516,10 +538,10 @@ async fn persist_rnode(
         
     }
 
-    // send task completed msg to evict service
-    if let Err(err) = evict_completed_send_ch.send(rkey.clone()).await {
+    // send task completed msg to persist service
+    if let Err(err) = persist_completed_send_ch.send(rkey.clone()).await {
         println!(
-            "Sending completed evict msg to waiting client failed: {}",
+            "Sending completed persist msg to waiting client failed: {}",
             err
         );
     }

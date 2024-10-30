@@ -614,32 +614,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         tasks -= 1;
     }
     // ==========================================================================
-    // Persist all nodes in the LRU cache by submiting them to the Evict service
+    // Persist all nodes in the LRU cache by - submiting them to the Persist service
     // ==========================================================================
+    let pre_lru_flush = Instant::now();
+    println!("MAIN: Duration of SP pre LRU flush: {:?}",pre_lru_flush.duration_since(start_1));
+  
     let lru_guard = lru_m.lock().await; 
     let mut entry = lru_guard.head.clone();
+    println!("MAIN: about to flush LRU to Persist service - cnt {}",lru_guard.cnt);
     drop(lru_guard);
     {
+        let mut lc = 0;
         let cache_guard = cache.lock().await;
         println!("Shutdown in progress..persist entries in LRU");
         while let Some(entry_) = entry {
-            
+                lc += 1;     
                 let rkey = entry_.lock().await.key.clone();
-                println!("Main: persist {:?}",rkey);
+                println!("Main: flush-persist  {}  {:?}",lc, rkey);
                 if let Some(arc_node) = cache_guard.0.get(&rkey) {
                     if let Err(err) = persist_submit_ch_p 
                                 .send((rkey, arc_node.clone()))
                                 .await {
-                                    panic!("Error on persist_submit_ch channel [{}]",err);
+                                    println!("Error on persist_submit_ch channel [{}]",err);
                                 }
+                } else {
+                    println!("Main: flush-persist {} failed to find {:?} in cache",lc, rkey);
                 }
 
                 entry = entry_.lock().await.next.clone();      
         }
     }
-    let end_time = Instant::now();
-
-    println!("Duration of SP: {:?}",end_time.duration_since(start_1));
+    let post_lru_flush = Instant::now();
+    println!("MAIN: Duration of SP post LRU flush: {:?}",post_lru_flush.duration_since(start_1));
     //sleep(Duration::from_millis(2000)).await;
     // ==============================
     // Shutdown support services

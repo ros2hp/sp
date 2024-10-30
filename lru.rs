@@ -37,7 +37,7 @@ impl Entry {
 
 pub struct LRUevict {
     capacity: usize,
-    cnt : usize,
+    pub cnt : usize,
     // pointer to Entry value in the LRU linked list for a RKey
     lookup : HashMap<RKey,Arc<Mutex<Entry>>>,
     // when an rkey is registered in inuse it will not be evict.
@@ -125,13 +125,15 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         
         //println!("   ");
         println!("******* LRU attach {:?}. ***********",rkey);
-        //self.print().await;        
-        if self.cnt > self.capacity && !self.inuse.contains(&rkey) {
+        //self.print().await;     
+        let mut lc = 0;   
+        while self.cnt > self.capacity && !self.inuse.contains(&rkey) && lc < 2 {
         
+            lc += 1;
             // ==============================================================
             // Evict = the tail entry in the LRU determines the node to evict
             // ==============================================================
-            println!("{}  LRU: attach reached LRU capacity - evict tail", task);
+            println!("{}  LRU: attach reached LRU capacity - evict tail  lru.cnt {}", task, self.cnt);
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
 
@@ -202,6 +204,7 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
             } else {
                 // as persist did not run, remove entry from evict hashset.
                 // in normal processing persist call lru to remove entry.
+                println!("LRU - abort evict due to inuse. lru.cnt {}  {:?}",self.cnt, rkey);
                 self.evict.remove(&evict_entry.key);
             }
         } 

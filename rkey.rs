@@ -87,13 +87,13 @@ impl RKey {
                 if rnode_guard.evicted {
                     // must wait for the evict-persist process to complete - setup comms with persist.
                     println!("RKEY: node read from cache but detected it has been evicted....{:?}",self);
-                    self. wait_till_persisted(task, lru.clone(), persist_query_ch, persist_client_send_ch, persist_srv_resp_ch).await;
+                    self.wait_till_persisted(task, lru.clone(), persist_query_ch, persist_client_send_ch, persist_srv_resp_ch).await;
                     // load node from database and attach to LRU
                     rnode_guard.load_OvB_metadata_from_db(dyn_client, table_name, self).await;
                     rnode_guard.add_reverse_edge(target.clone(), bid as u32, id as u32);
                     let mut lru_guard= lru.lock().await;
-                    lru_guard.attach(task, self.clone(), cache.clone()).await;              
-                    
+                    lru_guard.attach(task, self.clone(), cache.clone()).await;    
+                    lru_guard.unset_inuse(&self);                        
                 } else {
                   
                     // mark the LRU entry as immune to eviction
@@ -127,8 +127,6 @@ impl RKey {
                                     panic!("evict channel comm failed = {}", e);
                                 }
                 // wait for persist to complete
-                println!("{} - RKEY add_reverse_edge: not cached - was EVICTED previously, waiting on Persist", task);
-                
                 let persist_resp = match persist_srv_resp_ch.recv().await {
                     Some(resp) => resp,
                     None => {
@@ -136,7 +134,7 @@ impl RKey {
                         
                     }
                     };
-                println!("{} - RKEY add_reverse_edge: not cached - FINISHED waiting - recv ACK from PERSIT", task);
+                println!("{} - RKEY add_reverse_edge: node eviced FINISHED waiting - recv'd ACK from PERSIT {:?}", task, self);
                 // remove evict status
                 let mut lru_guard= lru.lock().await;
                 lru_guard.evict.remove(self);
