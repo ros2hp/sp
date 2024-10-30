@@ -14,6 +14,8 @@ pub struct RNode {
     pub target_uid: Vec<AttributeValue>,
     pub target_bid: Vec<AttributeValue>,
     pub target_id: Vec<AttributeValue>,
+    //
+    pub evicted : bool,
     // metadata that describes how to populate target* into db attributes when persisted
     pub ovb: Vec<Uuid>,  // Uuid of OvB
     pub obid: Vec<u32>,  // current batch id in each OvB
@@ -35,6 +37,8 @@ impl RNode {
             target_bid: vec![],
             target_id: vec![], //
             //
+            evicted: false,
+            //
             ovb: vec![],
             obid: vec![],
             //oblen: vec![],
@@ -52,6 +56,8 @@ impl RNode {
             target_uid: vec![],     // target_uid.len() total edges added in current sp session
             target_bid: vec![],
             target_id: vec![], //
+            //
+            evicted: false,
             //
             ovb: vec![],
             obcnt:0,

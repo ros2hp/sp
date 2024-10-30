@@ -40,7 +40,7 @@ use tokio::time::{sleep, Duration, Instant};
 //use tokio::task::spawn;
 
 const DYNAMO_BATCH_SIZE: usize = 25;
-const MAX_SP_TASKS : usize = 1;
+const MAX_SP_TASKS : usize = 4;
 const LRU_CAPACITY : usize = 40;
 
 const LS: u8 = 1;
@@ -153,7 +153,7 @@ impl QueryMsg {
 
 #[::tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>> {
-    let _start_1 = Instant::now();
+
     let mut task : usize = 0;
     // ===============================
     // 1. Source environment variables
@@ -167,7 +167,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let mysql_dbname =
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
     let graph = env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
-    let table_name = "RustGraph.dev.9";
+    let table_name = "RustGraph.dev.8";
+    // ===========================
+    // 2. Print config
+    // ===========================
+    println!("========== Config ===============  ");
+    println!("Parallel Tasks: {}",MAX_SP_TASKS);
+    println!("LRU Capacity:   {}",LRU_CAPACITY);
+    println!("Table name:     {}",table_name);
+    println!("DateTime :      {:?}",Instant::now());
+    println!("=================================  ");
     // ===========================
     // 2. Create a Dynamodb Client
     // ===========================
@@ -290,6 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         })
         .await?;
     println!("About to SQL - DONE");
+    let start_1: Instant = Instant::now();
     // ===========================================
     // 7. Setup asynchronous tasks infrastructure
     // ===========================================
@@ -370,10 +380,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                 }
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 ovb_pk.insert(p_sk_edge.clone(), ovbs);
-                
-                // for (k,v) in ovb_pk.iter() {
-                //     println!("k obv_p{} {:?}",k,v);
-                // }
 
                 let p_edge_attr_sn = &p_sk_edge[p_sk_edge.rfind(':').unwrap() + 1..]; // A#G#:A -> "A"
 
@@ -610,22 +616,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // ==========================================================================
     // Persist all nodes in the LRU cache by submiting them to the Evict service
     // ==========================================================================
-    // let lru_guard = lru_m.lock().await; 
-    // let mut entry = lru_guard.head.clone();
-    // drop(lru_guard);
-    // println!("Shutdown in progress..persist entries in LRU");
-    // while let Some(entry_) = entry {
-        
-    //         let rkey = entry_.lock().await.key.clone();
-    //         println!("Main: persist {:?}",rkey);
-    //         if let Err(err) = persist_submit_ch_p 
-    //                     .send(rkey)                          TODO: fix missing value in send <(RKey, Arc<Mutex<RNode>>)>
-    //                     .await {
-    //                         panic!("Error on persist_submit_ch channel [{}]",err);
-    //                     }
+    let lru_guard = lru_m.lock().await; 
+    let mut entry = lru_guard.head.clone();
+    drop(lru_guard);
+    {
+        let cache_guard = cache.lock().await;
+        println!("Shutdown in progress..persist entries in LRU");
+        while let Some(entry_) = entry {
+            
+                let rkey = entry_.lock().await.key.clone();
+                println!("Main: persist {:?}",rkey);
+                if let Some(arc_node) = cache_guard.0.get(&rkey) {
+                    if let Err(err) = persist_submit_ch_p 
+                                .send((rkey, arc_node.clone()))
+                                .await {
+                                    panic!("Error on persist_submit_ch channel [{}]",err);
+                                }
+                }
 
-    //         entry = entry_.lock().await.next.clone();      
-    // }
+                entry = entry_.lock().await.next.clone();      
+        }
+    }
+    let end_time = Instant::now();
+
+    println!("Duration of SP: {:?}",end_time.duration_since(start_1));
     //sleep(Duration::from_millis(2000)).await;
     // ==============================
     // Shutdown support services

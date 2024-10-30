@@ -164,6 +164,10 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
                 self.cnt-=1;
                 // consider removing from cache here and passing Rnode to eviction service.dsfa
                 let mut arc_evict_node : Arc<Mutex<RNode>>;
+                let locked = false;
+                // try and acquire cache lock - this may be in use from RKEY which is also acquire LRU lock
+                // so to prevent deadlock eviction will abort acquire and try again upto 10 times before panic.
+                let mut arc_evict_node : Arc<Mutex<RNode>>;
                 {
                     let mut cache_guard = cache.lock().await;
                     // ==========================================================
@@ -173,11 +177,15 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
                         else { println!("{}  LRU: PANIC - attach evict processing: expect entry in cache {:?}",task, evict_entry.key);
                                panic!("LRU: attach evict processing: expect entry in cache {:?}",evict_entry.key)};
                     arc_evict_node = arc_evict_node_.clone();
+                    {
+                        let mut node_guard=arc_evict_node.lock().await;
+                        node_guard.evicted=true;
+                    }
                     // ============================
                     // remove node from cache
                     // ============================
                     cache_guard.0.remove(&evict_entry.key);
-                }    
+                }  
                 // =====================
                 // notify persist service
                 // =====================
@@ -192,6 +200,8 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
                 //
                 self.lookup.remove(&evict_entry.key);
             } else {
+                // as persist did not run, remove entry from evict hashset.
+                // in normal processing persist call lru to remove entry.
                 self.evict.remove(&evict_entry.key);
             }
         } 
@@ -335,5 +345,4 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         lru_entry_guard.prev = None;
         self.head = Some(lru_entry.clone());
     }
-
 }
