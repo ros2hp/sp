@@ -4,10 +4,12 @@ Scalar Propagation (SP) is one of the data load components of GoGraph, a rudimen
 
 ## GoGraph Load Components
 
-| Load Compoent          | Abreviation |  Task                                       |  Data Source           |
-|-----------------------:|-------------|---------------------------------------------|------------------------|
-|  RDF-Loader            |   Ldr       | Load RDF file into Dynamodb and MySQL       |  RDF file              |
-|  Attach               2|   At        | Link child nodes to parent nodes            |  MySQL tables          |
-|  Scalar Propagation   3|   SP        | Propagate scalar data into parent node      |  MySQL tables          | 
-|  Double Propagation   4|   DP        | Progation scalar data into grandparent node |  MySQL tables          |
-|  ElasticSearch        5|   Es        | Load data into ElasticSearch                |  MySQL tables          |
+SP is the third in the sequence of five components that comprise the GoGraph RDF load process.
+
+| Load Compoent          | Abreviation |  Task                                                   |  Data Source           | Target Database |
+|-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
+|  RDF-Loader            |   Ldr       | Load RDF file into Dynamodb and MySQL                   |  RDF file              | Dynamodb, MySQL |
+|  Attach                |   At        | Link child nodes to parent nodes in Dynamodb            |  MySQL tables          | Dynamodb        |
+|  Scalar Propagation    |   SP        | Propagate child scalar data into parent node            |  MySQL tables          | Dynamodb        |
+|  Double Propagation    |   DP        | Progation grandchild scalar data into grandparent node  |  MySQL tables          | Dynamodb        |
+|  ElasticSearch         |   Es        | Load data into ElasticSearch                 |  MySQL tables          | Dynamodb        |
