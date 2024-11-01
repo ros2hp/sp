@@ -4,7 +4,7 @@ Scalar Propagation (SP) is the third in the sequence of five components that mak
 
 ## GoGraph Load Components
 
-The table below lists the order of the program components that loads a RDF file into GoGraph data model in Dynamodb. There is no size limit to the RDF file. MySQL is used as intermediary storage providing querying of the data as it is loaded into Dynamodb. 
+The table below lists the order of the programs that process a RDF file into the GoGraph data model in Dynamodb. There is no size limit to the RDF file. MySQL is used as an intermediary storage facility providing querying and sorting capabilties by each of the load programs. In the case of the Rust implemenation, none of the load programs are restartable should en error occur.  This is left as a future enhancement. The Go implementation of GoGraph are all restartable.
 
 | Load Compoent          | Binary      |  Task                                                   |  Data Source           | Target Database |
 |-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
