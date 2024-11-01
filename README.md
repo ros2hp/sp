@@ -9,8 +9,8 @@ The table below lists the order of the program components that loads a RDF file 
 | Load Compoent          | Binary      |  Task                                                   |  Data Source           | Target Database |
 |-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
 |  RDF-Loader            |   ldr       | Load RDF file into Dynamodb and MySQL                   |  RDF file              | Dynamodb, MySQL |
-|  Attacher              |   attach    | Link child nodes to parent nodes in Dynamodb            |  MySQL tables          | Dynamodb        |
-|  Scalar Propagation    |   sp        | Propagate child scalar data into parent node            |  MySQL tables          | Dynamodb        |
+|  Attacher              |   attach    | Link child nodes to parent nodes                        |  MySQL tables          | Dynamodb        |
+|  __Scalar Propagation__    |   __sp__        | __Propagate child scalar data into parent node__            |  __MySQL tables__          | __Dynamodb__        |
 |  Double Propagation    |   dp        | Propagate grandchild scalar data into grandparent node* |  MySQL tables          | Dynamodb        |
 |  ElasticSearch         |   es        | Load data into ElasticSearch                 |  MySQL tables          | Dynamodb        |
 
