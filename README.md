@@ -10,12 +10,15 @@ The table below lists the order of the programs that process a RDF file into the
 |-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
 |  RDF-Loader            |   ldr       | Load RDF file into Dynamodb and MySQL                   |  RDF file              | Dynamodb, MySQL |
 |  Attacher              |   attach    | Link child nodes to parent nodes                        |  MySQL tables          | Dynamodb        |
-|  _ _Scalar Propagation_ _|   _ _sp_ _    | _ _Propagate child scalar data into parent node_ _            |  _ _MySQL tables_ _          | _ _Dynamodb_ _        |
+|  _Scalar Propagation_  |   _sp_      | _Propagate child scalar data into parent node_          |  _MySQL tables_        | _Dynamodb_      |
 |  Double Propagation    |   dp        | Propagate grandchild scalar data into grandparent node* |  MySQL tables          | Dynamodb        |
-|  ElasticSearch         |   es        | Load data into ElasticSearch                 |  MySQL tables          | Dynamodb        |
+|  ElasticSearch         |   es        | Load data into ElasticSearch                            |  MySQL tables          | Dynamodb        |
 
 
 * for 1:1 relationships between grandparent and grandchild nodes
 
 ## GoGraph Design Guide 
+
+[A detailed description of GoGraph's design and data model are described in following document](docs/GoGraph-Design-Guide.pdf)
+
 
