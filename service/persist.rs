@@ -243,7 +243,7 @@ pub fn start_service(
 
 
                 _ = shutdown_ch.recv(), if tasks == 0 => {
-                        println!("PERSIST  Shutdown of persist service started. Waiting for remaining persist tasks [{}]to complete...",tasks as usize + pendingQ.0.len());
+                        println!("PERSIST  Shutdown of persist service started. Waiting for remaining persist tasks [{}] to complete...",tasks as usize + pendingQ.0.len());
                         while tasks > 0 {
                             //println!("PERSIST  ...waiting on {} tasks",tasks);
                             let Some(persist_rkey) = persist_completed_rx.recv().await else {panic!("Inconsistency; expected task complete msg got None...")};

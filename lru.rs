@@ -130,13 +130,12 @@ impl LRUevict { //impl LRU for MutexGuard<'_, LRUevict> {
         while self.cnt > self.capacity && !self.inuse.contains(&rkey) && lc < 2 {
         
             lc += 1;
-            // ==============================================================
-            // Evict = the tail entry in the LRU determines the node to evict
-            // ==============================================================
-            println!("{}  LRU: attach reached LRU capacity - evict tail  lru.cnt {}", task, self.cnt);
+            // ================================
+            // Evict the tail entry in the LRU 
+            // ================================
+            println!("{}  LRU: attach reached LRU capacity - evict tail  lru.cnt {}  lc {}", task, self.cnt, lc);
             // unlink tail lru_entry from lru and notify evict service.
             // Clone REntry as about to purge it from cache.
-
             let lru_evict_entry = self.tail.as_ref().unwrap().clone();
             let mut evict_entry = lru_evict_entry.lock().await;
             self.evict.insert(evict_entry.key.clone());   

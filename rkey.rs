@@ -51,7 +51,7 @@ impl RKey {
                     // ======================
                     // HAS NODE BEING EVICTED 
                     // ======================
-                    // must wait for the evict-persist process to complete 
+                    // if so, must wait for the evict-persist process to complete 
                     let mut lru_guard= lru.lock().await;
                     if let Some(_) = lru_guard.evict.get(self) {
                         drop(lru_guard);
@@ -85,7 +85,7 @@ impl RKey {
                 // HAS NODE BEING EVICTED 
                 // ======================
                 if rnode_guard.evicted {
-                    // must wait for the evict-persist process to complete - setup comms with persist.
+                    // if so, must wait for the evict-persist process to complete - setup comms with persist.
                     println!("RKEY: node read from cache but detected it has been evicted....{:?}",self);
                     self.wait_till_persisted(task, lru.clone(), persist_query_ch, persist_client_send_ch, persist_srv_resp_ch).await;
                     // load node from database and attach to LRU
