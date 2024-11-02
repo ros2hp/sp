@@ -1,15 +1,17 @@
 ## What is SP?
 
-Scalar Propagation (SP) is the third in the sequence of five components that make up the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for the same reason. GoGraph employees the Tokio asynchronous runtime to implement a highly concurrent design. The data model is designed to support internet scale data volumes. It currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also envisioned. 
+Scalar Propagation (SP) is the third in the sequence of five components that make up the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for a similar reason. GoGraph employees the Tokio asynchronous runtime to implement both a highly concurrent and asynchronous design. The data model is designed to support internet scale data volumes. It currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also envisioned. 
 
 ## GoGraph RDF Load Components
 
-The table below lists the sequence of programs that load a RDF file, of any size, into the GoGraph data model in Dynamodb. MySQL is used as an intermediary storage facility providing querying and sorting capabilties for each of the individual load components. Unlike the Go implementation, the Rust version does not support restartable load program. This is left as a future enhancement. It is therefore recommended to take a backup of the database after each of the load programs complete. 
+The table below lists the sequence of programs that load a RDF file into the GoGraph data model in Dynamodb. There is no limit to the size of the RDF file. 
+
+MySQL is used as an intermediary storage facility providing both query and sort capabilties to each of the load programs. Unlike the Go implementation, the Rust version does not support restartability of any of the load programs. This is left as a future enhancement. It is therefore recommended to take a backup of the database after each of the load programs complete. 
 
 | Load Compoent          |  Repo       |  Task                                                   |  Data Source           | Target Database |
 |-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
-|  RDF-Loader            |  ldr        | Load RDF file into Dynamodb and MySQL                   |  RDF file              | Dynamodb, MySQL |
-|  Attacher              | rust/attach | Link child nodes to parent nodes                        |  MySQL           | Dynamodb        |
+|  RDF-Loader            |   ldr       | Load RDF file into Dynamodb and MySQL                   |  RDF file              | Dynamodb, MySQL |
+|  Attacher              | rust-attach | Link child nodes to parent nodes                        |  MySQL           | Dynamodb        |
 |  _Scalar Propagation_  |   _sp_      | _Propagate child scalar data into parent node and_      |  _MySQL_        | _Dynamodb_      |
 |                        |             | _generate reverse edge data_                            |      | _Dynamodb_      |
 |  Double Propagation    |   dp        | Propagate grandchild scalar data into grandparent node* |  MySQL           | Dynamodb        |
@@ -20,7 +22,9 @@ The table below lists the sequence of programs that load a RDF file, of any size
 
 ## Why SP? ##
 
-Significantly improved query performance.  Replicating the scalar data of all child nodes into the parent node completely eliminates the database requests on the individual child nodes for any query on a node involving its children.  For a node that has hundreds of thousands of child nodes this effectively means hundreds of thousands of databses requests are eliminated for queries involving any of the child nodes attributes. See GoGraph's Design document (link below) for a description of how the propagated data is stored in Overflow Blocks associated with the parent node. Overflow blocks distributes the data across Dynamodb servers and enables parallel querying of the propagated data without increasing resource contention. In addition the propagated scalar data is stored in Dynamodb's LIST data types (or the equivalent in whatever database is used) which effiectively represents a Columnar type, commonly used in data warehouse sollutions, enabling a query of the child data to be implemented as a simple scan operation on the LIST type.
+Propagating (i.e replicating) the scalar data of each child node to the associated parent node for each parent-child edge means the requirement to query each child node for a particular node is nolonger necessary. Potentially thousands or even millions of database requests can be replaced with a single "logical" request to the parent node.  For example, to determine the average age of all the subscribers for a YouTube content maker would, without any data replication, require the database to query each subscriber. Not an issue if its few tens of subscribers but if its hundreds of thousands then it represents a severe bottleneck on the compute and IO resources. The purpose of scalar propagation in this case is to copy the age of each subscriber into a Columnar like structure associated with the parent. The average age can now be resolved by a single scan operation on the Columnar structure containing the age of each subscriber. Parallelising this query is also relatively simple. See GoGraph's Design document (link below) for a detailed description of the "Overflow Blocks" that are used to store the child nodes propagated child. Overflow blocks distributes the replicated data across Dynamodb partitions enabling parallel querying of the data without increasing resource contention. In Dynamodb, each scalar attribute that is propagated is stored in a LIST data type associated with the parent node which effectively emulates Columnar like storage. 
+
+ Tests have shown that a query involving 1020 child nodes can be performed in 0.122 seconds, substantially faster than querying all 1020 nodes individually.
 
 The downside of course is ...
 
@@ -47,16 +51,16 @@ A simplified view of SP is presented in the two schematics below. The first sche
            |       |  . .   |
            V       V        V
           Load    Load     Load
-          Task    Task     Task        (Tokio Tasks concurrently and asynchronously 
-          ^  |    ^  |     ^  |             read and write to cache )
+          Task    Task     Task        (Tokio Tasks asynchronously 
+          ^  |    ^  |     ^  |         read and write to cache )
           |  V    |  V     |  V
       ==============================
-      |     Reverse Edge Cache     |      (configurable cache size)
+      |     Reverse Edge Cache     |    
       ==============================
-                  |
-                  V
+                ^   |
+                |   V
                  LRU                   (responsibile for eviciting cache entries based
-                  |                              on LRU policy )
+                  |                              on a LRU policy )
                   V
             Persit Service             (Single Task that allocates child tasks to persist data.
           |       |    ..   |             Queues tasks if flooded with requests)
@@ -78,7 +82,7 @@ A simplified view of SP is presented in the two schematics below. The first sche
            --------------------
                     |
                     V
-                  Main
+                   Main
             |       |  . .   |
             V       V        V
            Load   Load     Load
@@ -91,4 +95,5 @@ A simplified view of SP is presented in the two schematics below. The first sche
 
     Schematic 2 - propagating scalar data
 
-## Example of Propagated Data in Dynamodb ##
+## Example of Propagated Scalar Data ##
+
