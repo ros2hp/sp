@@ -1,12 +1,12 @@
 ## What is SP?
 
-Scalar Propagation (SP) is the third in the sequence of five components that constitute the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for a similar reason. GoGraph employees the Tokio asynchronous runtime to implement both a highly concurrent and asynchronous design. The database design enables scaling to internet size data volumes. GoGraph currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also in development. 
+Scalar Propagation (SP) is the third in the sequence of five programs that constitute the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for a similar reason. GoGraph employees the Tokio asynchronous runtime to implement both a highly concurrent and asynchronous design. The database design enables scaling to internet size data volumes. GoGraph currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also in development. 
 
 ## GoGraph RDF Load Components
 
-The table below lists the sequence of programs that load a RDF file into the GoGraph data model in Dynamodb. There is no limit to the size of the RDF file. 
+The table below lists the sequence of programs that load a RDF file into the target database, Dynamodb. There is no limit to the size of the RDF file. 
 
-MySQL is used as an intermediary storage facility providing both query and sort capabilties to each of the load programs. Unlike the Go implementation, the Rust version does not support restartability of any of the load programs. This is left as a future enhancement. It is therefore recommended to take a backup of the database after each of the load programs complete. 
+MySQL is used as an intermediary storage facility providing both query and sort capabilties to each of the load programs. Unlike the Go implementation, the Rust version does not support restartability for any of the load programs. This is left as a future enhancement. It is therefore recommended to take a backup of the database after running each of the load programs. 
 
 | Load Program           |  Repo       |  Task                                                   |  Data Source           | Target Database |
 |-----------------------:|-------------|---------------------------------------------------------|------------------------|-----------------|
@@ -96,4 +96,11 @@ A simplified view of SP is presented in the two schematics below. The first sche
     Schematic 2 - propagating scalar data
 
 ## Example of Propagated Scalar Data ##
+
+Propagated scalar data is represented by a single Dynamodb item for each scalar attribute. The PK (Primary Key) value is that of the parent node, as propagated data belongs to the parent node. The SK (Sort Key) value identifies the scalar attribute and marks the item as propagated data. The next attribute depends on the type of the propagated attribute. For a String type the attribute is given the name "SL", which stands for "String List" as the LIST data type is used to store the values of each child node belonging to the parent-child edge. For number types, its "NL" and for boolean types its "BL". The last attribute for the item is "Xf", which represents a flag value and is also a LIST type. There is a 1:1 corespondence between each value in Xf and its associated value in NL or SL or BL. Xf has numerous values but the most important value for our discussion is whether the associated child node has been deleted or not. When a child node is removed its coresponding propagated data is not removed but marked with "soft delete" flag value. 
+
+
+| PK                             |  SK             |  NL                                          |   Xf                                       | 
+|--------------------------------|-----------------|----------------------------------------------|--------------------------------------------|
+
 
