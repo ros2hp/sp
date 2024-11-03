@@ -29,7 +29,7 @@ The downside of all this replication is the cost to maintain data consistency sh
 
 ## GoGraph Design Guide ##
 
-[A detailed description of GoGraph's database design, type system and data model are described in this document](docs/GoGraph-Design-Guide.pdf)
+[A detailed description of GoGraph's database design, type system, data model and performance analysis is provided in document](docs/GoGraph-Design-Guide.pdf)
 
 ## SP Highlights ##
 
