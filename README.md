@@ -33,7 +33,7 @@ The downside of all this replication is the cost to maintain data consistency sh
 
 ## SP Highlights ##
 
-* Implement a shared cache with LRU eviction policy that supports concurrent operations. A shared cache is ofcourse prone to panic,s data corruption or deadlack due to race-conditions corruptions but testing has shown the design is both robust and safe.
+* Implement a shared cache with LRU eviction policy that supports concurrent operations. A shared cache is of course prone data corruption, deadlacks and race-conditions but extensive testing has shown the implementation to be both robust and safe.
 * Configurable number of parallel streams implemented as Tokio Tasks.
 * Fully implements Tokio Asynchronous runtime across all operations.
 
