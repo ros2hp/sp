@@ -1,6 +1,6 @@
 ## What is SP?
 
-Scalar Propagation (SP) is the third in the sequence of five programs that constitute the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for a similar reason. GoGraph employees the Tokio asynchronous runtime to implement both a highly concurrent and asynchronous design. The database design enables scaling to internet size data volumes. GoGraph currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also in development. 
+Scalar Propagation (SP) is the third in the sequence of five programs that constitute the GoGraph RDF load process.  GoGraph is a rudimentary graph database, developed originally in Go principally as a way to learn the language and now refactored in Rust for a similar reason. GoGraph employees the Tokio asynchronous runtime to implement a highly concurrent and asynchronous design. The database design enables scaling to internet size data volumes. GoGraph currently supports AWS's Dynamodb, although other hyper scalable databases, such as Google's Spanner, is also in development. 
 
 ## GoGraph RDF Load Components
 
@@ -34,7 +34,7 @@ The downside of all this replication is the cost to maintain data consistency sh
 
 ## SP Highlights ##
 
-* Implement a cache with LRU eviction policy that supports concurrent operations.
+* Implement a shared cache with LRU eviction policy that supports concurrent operations. A shared cache is ofcourse prone to panic,s data corruption or deadlack due to race-conditions corruptions but testing has shown the design is both robust and safe.
 * Configurable number of parallel streams implemented as Tokio Tasks.
 * Fully implements Tokio Asynchronous runtime across all operations.
 
@@ -47,26 +47,38 @@ A simplified view of SP is presented in the two schematics below. The first sche
          ---------------------
                    |
                    V
+
                   Main
-           |       |  . .   |
-           V       V        V
+
+                   |
+            --------- . . ---      
+           |       |         |
+           V       V         V
+
           Load    Load     Load
           Task    Task     Task        (Tokio Tasks asynchronously 
-          ^  |    ^  |     ^  |         read and write to cache )
+                                        read and write to cache )
+          ^  |    ^  |     ^  |         
           |  V    |  V     |  V
       ==============================
       |     Reverse Edge Cache     |     (shared cache)
       ==============================
                 ^   |
                 |   V
+
                  LRU                   (responsibile for eviciting cache entries based
-                  |                              on a LRU policy )
+                                          on a LRU policy )
+                  |                              
                   V
+
             Persit Service             (Single Task that allocates child tasks to persist data.
-          |       |    ..   |             Queues tasks if flooded with requests)
+                                        Queues tasks if flooded with requests)
+          |       |    ..   |             
           V       V         V
+
         Persist Persist  Persist
          Task    Task     Task
+
           |       |         |
           V       V         V
           ---------------------
@@ -82,13 +94,19 @@ A simplified view of SP is presented in the two schematics below. The first sche
            --------------------
                     |
                     V
+
                    Main
+                   
+                    |
+            ---------- . . ---       
             |       |  . .   |
             V       V        V
+
            Load   Load     Load
            Task   Task     Task
-           ^  |   ^  |     ^  |      (Read child node scalar data)
-           |  V   |  V     |  V    (Write scalar data to parent node)
+
+           ^  |   ^  |     ^  |        (Read child node scalar data)
+           |  V   |  V     |  V       (Write scalar data to parent node)
           ----------------------
          |       Dynamodb       |
           ----------------------
