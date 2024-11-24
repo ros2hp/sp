@@ -17,8 +17,10 @@ use std::string::String;
 //use std::sync::LazyLock;
 use std::sync::Arc;
 
-use node::RNode;
+//use service::stats;
 
+use node::RNode;
+use crate::service::stats::{Waits, Event};
 use rkey::RKey;
 
 use aws_sdk_dynamodb::primitives::Blob;
@@ -36,11 +38,11 @@ use mysql_async::prelude::*;
 
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant};
 //use tokio::task::spawn;
 
 const DYNAMO_BATCH_SIZE: usize = 25;
-const MAX_SP_TASKS : usize = 4;
+const MAX_SP_TASKS : usize = 8;
 const LRU_CAPACITY : usize = 40;
 
 const LS: u8 = 1;
@@ -167,13 +169,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     let mysql_dbname =
         env::var("MYSQL_DBNAME").expect("env variable `MYSQL_DBNAME` should be set in profile");
     let graph = env::var("GRAPH_NAME").expect("env variable `GRAPH_NAME` should be set in profile");
-    let table_name = "RustGraph.dev.8";
+    let table_name = "RustGraph.dev.10";
     // ===========================
     // 2. Print config
     // ===========================
     println!("========== Config ===============  ");
-    println!("Config: Parallel Tasks: {}",MAX_SP_TASKS);
-    println!("Config: LRU Capacity:   {}",LRU_CAPACITY);
+    println!("Config: MAX_SP_TASKS:   {}",MAX_SP_TASKS);
+    println!("Config: LRU_CAPACITY:   {}",LRU_CAPACITY);
     println!("Config: Table name:     {}",table_name);
     println!("Config: DateTime :      {:?}",Instant::now());
     println!("=================================  ");
@@ -204,40 +206,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
 
     // start Retry service (handles failed putitems)
     println!("start Retry service...");
-    let (retry_ch, retry_rx) = tokio::sync::mpsc::channel(MAX_SP_TASKS * 2);
-    let retry_shutdown_ch = shutdown_broadcast_sender.subscribe();
-    let retry_service = service::retry::start_service(
-        dynamo_client.clone(),
-        retry_rx,
-        retry_ch.clone(),
-        retry_shutdown_ch,
-        table_name,
-    );
+    // let (retry_ch, retry_rx) = tokio::sync::mpsc::channel(MAX_SP_TASKS * 2);
+    // let retry_shutdown_ch = shutdown_broadcast_sender.subscribe();
+    // let retry_service = service::retry::start_service(
+    //     dynamo_client.clone(),
+    //     retry_rx,
+    //     retry_ch.clone(),
+    //     retry_shutdown_ch,
+    //     table_name,
+    // );
     // start persist service
     // setup persist channels
     //  * queue Rkey for persistion
-    let (persist_submit_ch_p, persist_submit_rx) = tokio::sync::mpsc::channel::<(RKey, Arc<Mutex<RNode>>)>(MAX_SP_TASKS*2);
+    let (persist_submit_ch_p, persist_submit_rx) = tokio::sync::mpsc::channel::<(RKey, Arc<Mutex<RNode>>, tokio::sync::mpsc::Sender<bool>)>(MAX_SP_TASKS*4);
     //  * query persist service e.g. is node in persist queue?
     let (persist_query_ch_p, persist_query_rx) =
         tokio::sync::mpsc::channel::<QueryMsg>(MAX_SP_TASKS * 2);
     // * shutdown
     let persist_shutdown_ch = shutdown_broadcast_sender.subscribe();
-    println!("start persist service...");
 
     // ================================================
     // create persistion LRU and cache for reverse edges
     // ================================================
     println!("LRU CAPACITY  {}",LRU_CAPACITY);
     let (lru_m, cache) = lru::LRUevict::new(LRU_CAPACITY, persist_submit_ch_p.clone()); 
+    // ====================
+    // start Waits service
+    // ====================
+    let stats_shutdown_ch = shutdown_broadcast_sender.subscribe();
+    let (stats_ch, mut stats_rx) = tokio::sync::mpsc::channel::<(service::stats::Event, Duration, Duration)>(MAX_SP_TASKS*50); 
+    let (close_service_ch, mut close_service_rx) = tokio::sync::mpsc::channel::<bool>(1); 
+    let waits = service::stats::Waits::new(stats_ch);
 
+    let stats_service = service::stats::start_service(stats_rx, close_service_rx);
+        // ====================
+    // start Persist service
+    // ====================
+    println!("start persist service...");
     let persist_service = service::persist::start_service(
         dynamo_client.clone(),
-        table_name,
+        table_name, 
         persist_submit_rx,
         persist_query_rx,
-        persist_shutdown_ch,
+        close_service_ch,
+        persist_shutdown_ch, 
+        waits.clone(),
     );
-
     // ================================
     // 4. Setup a MySQL connection pool
     // ================================
@@ -304,13 +318,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // 7. Setup asynchronous tasks infrastructure
     // ===========================================
     let mut tasks: usize = 0;
-    let (prod_ch, mut task_rx) = tokio::sync::mpsc::channel::<bool>(MAX_SP_TASKS);
+    let (task_ch_, mut task_rx) = tokio::sync::mpsc::channel::<bool>(MAX_SP_TASKS);
     // ====================================
     // 8. Setup retry failed writes channel
     // ====================================
-    let (retry_send_ch, retry_rx) =
-        tokio::sync::mpsc::channel::<Vec<aws_sdk_dynamodb::types::WriteRequest>>(MAX_SP_TASKS);
-    // ===============================================================================
+    // let (retry_send_ch, retry_rx) =
+    //     tokio::sync::mpsc::channel::<Vec<aws_sdk_dynamodb::types::WriteRequest>>(MAX_SP_TASKS);
+    // // ===============================================================================
     // 9. process each parent_node and its associated edges (child nodes) in parallel
     // ===============================================================================
     for puid in parent_node {
@@ -330,20 +344,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
         // =====================================================
         // 9.1 clone enclosed vars before moving into task block
         // =====================================================
-        let task_ch = prod_ch.clone();
+        let task_ch = task_ch_.clone();
         let dyn_client = dynamo_client.clone();
-        let retry_ch = retry_send_ch.clone();
+        //let retry_ch = retry_ch.clone();
         let graph_sn = graph_prefix_wdot.trim_end_matches('.').to_string();
         let node_types = node_types.clone(); // Arc instance - single cache in heap storage
         let lru: Arc<tokio::sync::Mutex<lru::LRUevict>> = lru_m.clone();
         let cache= cache.clone();
         let persist_query_ch = persist_query_ch_p.clone();
+        let waits = waits.clone();
+        let waits2 = waits.clone();
+        // concurrent task counter
+        tasks += 1; 
 
-        tasks += 1; // concurrent task counter
+        // assign a task number to each concurrent task
         task+=1;
-        if task > MAX_SP_TASKS {
-            task=1;
-        }
+        // if task > 100 {
+        //     task=1;
+        // }
+        
         // =========================================
         // 9.2 spawn tokio task for each parent node
         // =========================================
@@ -351,7 +370,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             // ============================================
             // 9.2.3 propagate child scalar data to parent
             // ============================================
-            println!("********************** TASK {} ******************************",task);
+            println!("********************** MAIN TASK {} ******************************",task);
             for (p_sk_edge, children) in p_sk_edges {
             
                 // Container for Overflow Block Uuids, also stores all propagated data.
@@ -369,13 +388,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     &graph_sn,
                     &node_types,
                     table_name,
+                    waits.clone(),
                 )
                 .await;
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 // used for testing only - comment out this if when not testing
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                 if p_node_ty.short_nm() != "Fm" {
-                    println!("break...");
                     break;
                 }
                 // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -579,10 +598,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
                     add_rvs_edge,
                     puid,
                     reverse_sk,
-                    &retry_ch,
+                    //&retry_ch,
                     ovb_pk,
                     items,
                     persist_query_ch.clone(),
+                    waits.clone(),
                 )
                 .await;
 
@@ -590,29 +610,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
             // ===================================
             // 9.2.4 send complete message to main
             // ===================================
+            let before = Instant::now();
             if let Err(e) = task_ch.send(true).await {
-                panic!("error sending on channel task_ch - {}", e);
+                panic!("MAIN: Error - at task end: error sending on channel task_ch - {}", e);
             }
+            waits.record(Event::Task_Send, Instant::now().duration_since(before)).await;
+            //println!("MAIN TASK {} finished  {}",task, tasks);
         });
 
-        // =============================================================
-        // 9.3 Wait for task to complete if max concurrent tasks reached
-        // =============================================================
-        if tasks == MAX_SP_TASKS {
-            // wait for a task to finish...
-            task_rx.recv().await;
-            tasks -= 1;
+        if tasks >= MAX_SP_TASKS {
+            // ===============================
+            // 9.3 Wait for a task to complete
+            // ===============================
+            let before = Instant::now();
+            match task_rx.recv().await {
+                None => {panic!("MAIN: unexpected : task_rx got None")}
+                Some(_) => { tasks -= 1;}
+            }
+            waits2.record(Event::Task_Recv, Instant::now().duration_since(before)).await;
         }
     }
-
     // =========================================
     // 10.0 Wait for remaining tasks to complete
     // =========================================
+    println!("MAIN: exited for loop...waiting for tasks {} to finish.",tasks);
     while tasks > 0 {
         // wait for a task to finish...
-        task_rx.recv().await;
-        tasks -= 1;
+        println!("MAIN: wait for a task to finish.... Tasks {}",tasks);
+        let before = Instant::now();
+        match task_rx.recv().await {
+            None => {panic!("MAIN: task_rx.recv() got none ");}
+            Some(_) => {tasks-=1;}
+        }; 
+        waits.record(Event::Task_Remain_Recv, Instant::now().duration_since(before)).await;  
     }
+    // task channel should be empty
+    assert!(task_rx.is_empty());
+    // close task channel, why? 
+    println!("MAIN: all tasks finished  ");
+    task_rx.close();
     // ==========================================================================
     // Persist all nodes in the LRU cache by - submiting them to the Persist service
     // ==========================================================================
@@ -624,26 +660,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     println!("MAIN: about to flush LRU to Persist service - cnt {}",lru_guard.cnt);
     drop(lru_guard);
     {
+        let (client_ch, mut client_rx) = tokio::sync::mpsc::channel::<bool>(1);
         let mut lc = 0;
         let cache_guard = cache.lock().await;
-        println!("Shutdown in progress..persist entries in LRU");
+        println!("MAIN shutdown in progress..persist entries in LRU");
         while let Some(entry_) = entry {
                 lc += 1;     
                 let rkey = entry_.lock().await.key.clone();
-                println!("Main: flush-persist  {}  {:?}",lc, rkey);
+                println!("MAIN: flush-persist  {}  {:?}",lc, rkey);
                 if let Some(arc_node) = cache_guard.0.get(&rkey) {
                     if let Err(err) = persist_submit_ch_p 
-                                .send((rkey, arc_node.clone()))
+                                .send((rkey, arc_node.clone(), client_ch.clone()))
                                 .await {
                                     println!("Error on persist_submit_ch channel [{}]",err);
                                 }
+                    if let None= client_rx.recv().await {
+                        panic!("MAIN read from client_rx is None ");
+                    }
                 } else {
-                    println!("Main: flush-persist {} failed to find {:?} in cache",lc, rkey);
+                    println!("MAIN: flush-persist {} failed to find {:?} in cache",lc, rkey);
                 }
 
-                entry = entry_.lock().await.next.clone();      
+                entry = entry_.lock().await.next.clone();    
+                if let None = entry {
+                    println!("MAIN: flush-persist entry is None...finished.");
+                }  
         }
     }
+    println!("MAIN: flush-persist completed.");
     let post_lru_flush = Instant::now();
     println!("MAIN: Duration of SP post LRU flush: {:?}",post_lru_flush.duration_since(start_1));
     //sleep(Duration::from_millis(2000)).await;
@@ -651,9 +695,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Sync + Send + 'static>
     // Shutdown support services
     // ==============================
     shutdown_broadcast_sender.send(0);
-    retry_service.await;
-    persist_service.await;
-
+    //println!("MAIN: retry_service");
+    //retry_service.await;
+    println!("MAIN: persist_service");
+    let _ = persist_service.await;
+    println!("MAIN: stats_service");
+    let _ = stats_service.await;
+    println!("MAIN: END");
     Ok(())
 }
 
@@ -671,11 +719,13 @@ async fn persist(
     target_uid: Uuid,
     reverse_sk: String,
     //
-    retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
+    //retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     ovb_pk: HashMap<String, Vec<Uuid>>,
     items: HashMap<SortK, Operation>,
     //
     persist_query_ch: tokio::sync::mpsc::Sender<QueryMsg>,
+    //
+    waits : service::stats::Waits
 ) {
     // create channels to communicate (to and from) lru eviction service
     // evict_resp_ch: sender - passed to eviction service so it can send its response back to this routine
@@ -767,7 +817,7 @@ async fn persist(
                     }
                 };
                 
-                bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                bat_w_req = save_item(&dyn_client, bat_w_req, put, table_name).await;
 
                 if add_rvs_edge {
 
@@ -785,7 +835,8 @@ async fn persist(
                             , &mut persist_srv_resp_ch
                             , &target_uid
                             , 0
-                            , id)
+                            , id
+                            , waits.clone())
                             .await;
                     }
                 }
@@ -887,7 +938,7 @@ async fn persist(
                         }
 
                         bat_w_req =
-                            save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                            save_item(&dyn_client, bat_w_req, put, table_name).await;
 
                         if add_rvs_edge{
                             for (id, child) in children.into_iter().enumerate() {
@@ -905,7 +956,8 @@ async fn persist(
                                     , &mut persist_srv_resp_ch
                                     , &ovb
                                     , bid
-                                    , id)
+                                    , id
+                                    , waits.clone())
                                     .await;
                             }
                         }
@@ -995,7 +1047,7 @@ async fn persist(
                             }
                         }
 
-                        bat_w_req = save_item(&dyn_client, bat_w_req, retry_ch, put, table_name).await;
+                        bat_w_req = save_item(&dyn_client, bat_w_req, put, table_name).await;
 
                         if add_rvs_edge {
                             for (id, child) in children.into_iter().enumerate() {
@@ -1013,7 +1065,8 @@ async fn persist(
                                     , &mut persist_srv_resp_ch
                                     , &ovb
                                     , bid
-                                    , id)
+                                    , id
+                                    , waits.clone())
                                     .await;
 
                             } //unlock cache and edgeItem locks
@@ -1031,13 +1084,13 @@ async fn persist(
 
         if bat_w_req.len() > 0 {
         //print_batch(bat_w_req);
-            bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
+            bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req,  table_name).await;
         }
     } // end for
     
     if bat_w_req.len() > 0 {
         //print_batch(bat_w_req);
-        bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
+        bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req,  table_name).await;
     }
 }
 
@@ -1057,9 +1110,11 @@ async fn fetch_p_edge_meta<'a, T: Into<String>>(
     graph_sn: T,
     node_types: &'a types::NodeTypes,
     table_name: &str,
+    waits: Waits,
 ) -> (&'a types::NodeType, Vec<Uuid>) {
     let proj = types::ND.to_owned() + "," + types::XF + "," + types::TY;
 
+    let before = Instant::now();
     let result = dyn_client
         .get_item()
         .table_name(table_name)
@@ -1068,6 +1123,7 @@ async fn fetch_p_edge_meta<'a, T: Into<String>>(
         .projection_expression(proj)
         .send()
         .await;
+    waits.record(Event::Get_Item, Instant::now().duration_since(before)).await;
 
     if let Err(err) = result {
         panic!(
@@ -1120,7 +1176,7 @@ async fn fetch_p_edge_meta<'a, T: Into<String>>(
 async fn save_item(
     dyn_client: &DynamoClient,
     mut bat_w_req: Vec<WriteRequest>,
-    retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
+    //retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     put: PutRequestBuilder,
     table_name: &str,
 ) -> Vec<WriteRequest> {
@@ -1138,7 +1194,7 @@ async fn save_item(
     if bat_w_req.len() == DYNAMO_BATCH_SIZE {
         // =================================================================================
         // persist to Dynamodb
-        bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, retry_ch, table_name).await;
+        bat_w_req = persist_dynamo_batch(dyn_client, bat_w_req, table_name).await;
         // =================================================================================
         //bat_w_req = print_batch(bat_w_req);
     }
@@ -1149,7 +1205,7 @@ async fn save_item(
 async fn persist_dynamo_batch(
     dyn_client: &DynamoClient,
     bat_w_req: Vec<WriteRequest>,
-    retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
+    //retry_ch: &tokio::sync::mpsc::Sender<Vec<aws_sdk_dynamodb::types::WriteRequest>>,
     table_name: &str,
 ) -> Vec<WriteRequest> {
 
@@ -1172,12 +1228,12 @@ async fn persist_dynamo_batch(
                 // send unprocessed writerequests on retry channel
                 for (_, v) in resp.unprocessed_items.unwrap() {
                     println!("persist_dynamo_batch, unprocessed items..delay 2secs");
-                    sleep(Duration::from_millis(2000)).await;
-                    let resp = retry_ch.send(v).await; // retry_ch auto deref'd to access method send.
+                    //sleep(Duration::from_millis(2000)).await;
+                    //let resp = retry_ch.send(v).await; // retry_ch auto deref'd to access method send.
 
-                    if let Err(err) = resp {
-                        panic!("Error sending on retry channel : {}", err);
-                    }
+                    // if let Err(err) = resp {
+                    //     panic!("Error sending on retry channel : {}", err);
+                    // }
                 }
 
                 // TODO: aggregate batchwrite metrics in bat_w_output.
